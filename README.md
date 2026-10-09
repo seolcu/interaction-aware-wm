@@ -54,6 +54,25 @@ Research proposal · Artificial Intelligence, Ajou University (Fall 2026)
 - Planning은 `z^c`만 보고 한다. 그래서 `z^u`에 들어간 distractor가 planning을 방해하지 못한다.
 - 공식 코드는 공개되지 않았다.
 
+## Related Work
+
+선행연구를 세 조건으로 비교한다: ① controllable / uncontrollable 분리, ② uncontrollable이 controllable에 주는 영향(u → c) 모델링, ③ reconstruction·reward 없이 학습해 planning.
+
+| Work | ① c/u 분리 | ② u → c interaction | ③ Recon·reward 없이 planning |
+|---|---|---|---|
+| TIA (ICML 2021) | △ reward 관련 / 무관 | ✗ | ✗ |
+| Denoised MDP (ICML 2022) | ✓ | ✗ | ✗ |
+| Iso-Dream++ (2023) | ✓ | △ 반대 방향 (c → u) | ✗ |
+| SPARTAN (NeurIPS 2025) | ✗ object 단위 | ✓ sparse attention | ✗ 예측만 |
+| Causal-JEPA (2026.02) | ✗ object 단위 | △ masking으로 암묵적 | ✓ slot encoder 필요 |
+| SMWM (2026.06) | △ controllable만 | ✗ | ✓ |
+| CF-JEPA (2026.10) | ✓ | ✗ 독립 가정 | ✓ |
+| **Ours (목표)** | ✓ | ✓ gate `α_t` | ✓ |
+
+- **Iso-Dream++**가 가장 가까운 선행연구다. Sparse gate가 있지만 방향이 controllable → noncontrollable이고, noncontrollable 미래는 policy의 attention으로만 쓰인다. 본 연구는 반대 방향(`z^u → z^c`)을 world model 예측 안에서 학습한다.
+- **SPARTAN**은 object token 간 attention에 sparsity penalty를 건다. 본 연구의 sparsity term `ρ · E[α_t]`는 같은 계열의 idea다.
+- 세 조건을 동시에 만족하는 연구는 찾지 못했다 (2026.10.09 검색 기준).
+
 ## Problem Statement
 
 CF-JEPA §V (Conclusion)에 다음과 같이 적혀 있다:
@@ -63,7 +82,7 @@ CF-JEPA §V (Conclusion)에 다음과 같이 적혀 있다:
 > = "주변 object는 agent에 절대 영향을 주지 않는다고 가정했다"
 
 이 가정 때문에 생기는 문제는 두 가지다.
-- **Architectural independence:** `z^c`를 예측하는 `g`는 `z^u`를 아예 보지 않는다. 주변 object가 agent를 밀어도 모델은 그 사실을 알 수 없다.
+- **Architectural independence:** CF-JEPA는 §III-A Eq. 1에서 환경을 `T(s′|s, a) = T_c(s^c′|s^c, a) · T_u(s^u′|s^u)`로 정의하고, 이 구조를 exogenous block MDP(Efroni et al., 2022)라 부른다. `T_c`에는 `s^u`가 들어가지 않는다. 같은 구조로 `z^c`를 예측하는 `g`는 `z^u`를 아예 보지 않는다. 주변 object가 agent를 밀어도 모델은 그 사실을 알 수 없다. 그래서 collision이 있으면 `g`를 아무리 잘 학습해도 `E[Var(z^c_{t+1} | z^c_t, a_t)]`만큼의 오차가 남는다.
 - **Evaluation gap:** 논문 실험의 distractor는 화면 가장자리를 지나가는 색 사각형뿐이다. 부딪히는 상황은 시험되지 않았다.
 
 ## Proposed Method
@@ -130,9 +149,14 @@ Dataset과 checkpoint는 커밋하지 않는다 (`.gitignore` 참고).
 
 ## References
 
-1. **LeWorldModel (LeWM)**. [arXiv:2603.19312](https://arxiv.org/abs/2603.19312), 2026.
+1. Maes, Le Lidec, Scieur, LeCun, Balestriero. **LeWorldModel: Stable End-to-End JEPA from Pixels (LeWM)**. [arXiv:2603.19312](https://arxiv.org/abs/2603.19312), 2026.
 2. Byrd, Wright, Ha. **CF-JEPA: Improving Robustness of JEPA World Models via Controllability Factorization**. [arXiv:2610.00727](https://arxiv.org/abs/2610.00727), 2026.
-3. Ivashkov, Balestriero, Schölkopf. **Sensorimotor World Models (SMWM)**. [arXiv:2606.20104](https://arxiv.org/abs/2606.20104), 2026.
-4. **A Control Theory of Predictability in Latent World Models**. [arXiv:2607.10362](https://arxiv.org/abs/2607.10362), 2026.
-5. **Orthogonal JEPA: Factorized Predictive States for Latent World Models**. [arXiv:2608.20065](https://arxiv.org/abs/2608.20065), 2026.
-6. **Disentangling Controllable and Uncontrollable Factors of Variation by Interacting with the World**. [arXiv:1804.06955](https://arxiv.org/abs/1804.06955), 2018.
+3. Ivashkov, Balestriero, Schölkopf. **Sensorimotor World Models: Perception for Action via Inverse Dynamics (SMWM)**. [arXiv:2606.20104](https://arxiv.org/abs/2606.20104), 2026.
+4. Nam, Le Lidec, Maes, LeCun, Balestriero. **Causal-JEPA: Learning World Models through Object-Level Latent Masking**. [arXiv:2602.11389](https://arxiv.org/abs/2602.11389), 2026.
+5. Lei, Schölkopf, Posner. **SPARTAN: A Sparse Transformer World Model Attending to What Matters**. NeurIPS 2025. [arXiv:2411.06890](https://arxiv.org/abs/2411.06890).
+6. Pan, Zhu, Zheng, Wang, Yang. **Model-Based Reinforcement Learning with Isolated Imaginations (Iso-Dream++)**. [arXiv:2303.14889](https://arxiv.org/abs/2303.14889), 2023.
+7. Wang, Du, Torralba, Isola, Zhang, Tian. **Denoised MDPs: Learning World Models Better Than the World Itself**. ICML 2022. [arXiv:2206.15477](https://arxiv.org/abs/2206.15477).
+8. Fu, Yang, Agrawal, Jaakkola. **Learning Task Informed Abstractions (TIA)**. ICML 2021. [arXiv:2106.15612](https://arxiv.org/abs/2106.15612).
+9. Efroni, Misra, Krishnamurthy, Agarwal, Langford. **Provably Filtering Exogenous Distractors using Multistep Inverse Dynamics**. ICLR 2022. [arXiv:2110.08847](https://arxiv.org/abs/2110.08847).
+10. You et al. **A Control Theory of Predictability in Latent World Models**. [arXiv:2607.10362](https://arxiv.org/abs/2607.10362), 2026.
+11. Sawada. **Disentangling Controllable and Uncontrollable Factors of Variation by Interacting with the World**. [arXiv:1804.06955](https://arxiv.org/abs/1804.06955), 2018.

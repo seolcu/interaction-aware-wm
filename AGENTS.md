@@ -65,11 +65,31 @@ This file provides guidance to AI agents when working with code in this reposito
   - "we assume that the uncontrollable part of the scene never affects the controllable part"
   - "a person working next to the robot, would require extending the model"
 
+- **CF-JEPA가 꼽은 가장 가까운 prior:** SMWM(inverse dynamics 쪽), TIA와 Denoised MDP(latent 분리 쪽, 둘 다 reconstruction 필요). Iso-Dream 계열은 인용하지 않았다.
+- **환경 정의 (§III-A Eq. 1):** `T(s′|s, a) = T_c(s^c′|s^c, a) · T_u(s^u′|s^u)`, `x_t = q(s^c_t, s^u_t)`이다. 저자는 이 구조를 "exogenous block MDP"라 부르며 Efroni et al.(ICLR 2022)을 인용한다. `T_c`에는 `s^u`가 들어가지 않고, 두 부분이 만나는 곳은 emission `q`뿐이다.
+- **Distractor 배치:** task를 가리지 않게 배치한다. 저자는 method 절에서 "task를 직접 가리는 것은 포착할 수 없다"는 한계도 따로 적었다.
+
+### 선행연구에서 확인한 사실 (10/9, 원문 기준)
+
+- **Iso-Dream++ (2303.14889, arXiv 2023):** 가장 가까운 선행연구다. 학술지 게재 정보는 arXiv에도 없다.
+  - 저자는 v2 기준 5명(Pan, Zhu, Zheng, Wang, Yang)이다. v1에는 Zheng이 없다.
+  - Inverse dynamics로 controllable / noncontrollable branch를 분리한다.
+  - Sparse dependency gate의 방향은 controllable → noncontrollable(s_t → z_{t+1})이다. FC + sigmoid를 0.5에서 hard threshold한다.
+  - Controllable transition prior는 noncontrollable state를 받지 않는다. Noncontrollable 미래는 policy의 attention 입력으로만 쓰인다.
+  - Dreamer 기반이라 reconstruction과 reward가 필요하다. 환경은 CARLA와 DMC video background다.
+- **Denoised MDP (ICML 2022):** controllable·reward-relevant x의 transition이 p(x_t | x_{t-1}, a)라 noise latent를 받지 않는다.
+- **SPARTAN (2411.06890, NeurIPS 2025):**
+  - Object token 간 attention을 Bernoulli mask(Gumbel-softmax)로 만들고, edge 수에 Lagrangian sparsity penalty를 건다.
+  - Object latent는 ground-truth mask나 slot에서 얻는다. 예측만 평가하고 planning은 하지 않는다.
+- **Causal-JEPA (2602.11389):** object-level latent masking으로 interaction을 암묵적으로 학습한다. Frozen VideoSAUR(DINOv2 기반 slot) encoder를 쓰고, Push-T에서 CEM으로 planning한다.
+- **2607.10362:** planner가 도달하는 state에서의 예측 충실도가 control 성공을 좌우하고, data 평균 예측 오차와는 거의 무관하다는 분석이다. Controllability와는 관계가 없다. 평가에서 success rate를 주 지표로 두는 근거로 쓴다.
+- **2608.20065 (Orthogonal JEPA):** 저자가 철회했다. 후속 논문 2609.20800(JEPA-Anything)은 범용 factorization이라 인용하지 않는다.
+
 ### 아직 확인하지 않은 것
 
 - LeWM TwoRoom checkpoint와 data를 공개적으로 받을 수 있는지
 - stable-worldmodel의 TwoRoom 환경에 object를 추가하는 난이도
-- 2607.10362(Control Theory of Predictability), 2608.20065(Orthogonal JEPA), 2602.11389(Causal-JEPA)는 초록만 확인했다
+- Iso-Dream++의 학술지 게재본(TPAMI 등) 여부
 
 ## 작업 규칙
 
