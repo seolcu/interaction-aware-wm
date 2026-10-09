@@ -6,73 +6,105 @@ Research proposal · Artificial Intelligence, Ajou University (Fall 2026)
 
 ## Abstract
 
-CF-JEPA는 JEPA world model의 latent를 **controllable** 부분 `z^c`와 **uncontrollable** 부분 `z^u`로 factorize한다. 이를 통해 visual distractor에 대한 robustness를 크게 높였다. 그러나 CF-JEPA는 uncontrollable 부분이 controllable 부분의 dynamics에 영향을 주지 않는다고 가정한다. 그래서 distractor가 agent와 물리적으로 interaction하는 상황, 예를 들어 collision은 모델링할 수 없다.
+**World model**은 "이 action을 하면 다음 장면이 어떻게 될까"를 예측하는 모델이다. Robot은 이 예측을 이용해 실제로 움직이기 전에 미리 planning한다.
 
-본 연구는 controllable predictor에 learnable **interaction gate**를 추가한다. 이 gate는 non-interacting 구간에서는 CF-JEPA의 robustness를 보존하고, interaction이 발생하는 구간에서만 `z^u`의 정보를 `z^c`의 transition에 반영한다.
+최신 world model인 CF-JEPA는 장면 정보를 두 부분으로 나눈다.
+- **controllable** 부분 `z^c`: agent가 action으로 바꿀 수 있는 정보. 예를 들어 agent의 위치다.
+- **uncontrollable** 부분 `z^u`: action과 무관하게 움직이는 정보. 예를 들어 화면 속 distractor다.
+
+이렇게 나눈 덕분에 CF-JEPA는 관계없는 distractor가 많아도 무너지지 않는다. 대신 CF-JEPA는 **"`z^u`는 `z^c`에 절대 영향을 주지 않는다"고 가정**한다. 그래서 움직이는 object가 agent와 **collision**하는 상황은 예측할 수 없다.
+
+본 연구는 CF-JEPA의 예측에 **interaction gate**를 하나 추가한다. Interaction gate는 평소에는 꺼져 있다가, 부딪히는 순간에만 켜지는 스위치다. 목표는 평소의 robustness는 유지하면서, collision이 있는 상황의 prediction과 planning을 개선하는 것이다.
+
+## Key Concepts
+
+| Term | 설명 |
+|---|---|
+| **World model** | 현재 상태와 action으로 다음 상태를 예측하는 모델 |
+| **JEPA** | 다음 *이미지*를 그리는 대신, 다음 *latent*를 예측하는 방식 (Joint-Embedding Predictive Architecture) |
+| **Latent** | Encoder가 이미지를 압축해 만든 짧은 숫자 vector |
+| **Planning (CEM)** | 여러 action 후보를 world model로 미리 굴려 보고, goal에 가장 가까워지는 action을 고르는 방법 |
+| **Distractor** | Task와 무관하게 화면에서 움직이는 object |
+| **Controllable / Uncontrollable** | Agent의 action으로 바꿀 수 있는 정보 / 바꿀 수 없는 정보 |
+| **Inverse dynamics loss** | 전후 상태만 보고 어떤 action을 했는지 맞히게 하는 보조 loss |
+| **Gradient reversal** | 학습 신호의 부호를 뒤집는 장치. 한쪽 network는 action을 맞히려 하고, encoder는 못 맞히게 만든다 |
+| **Representation collapse** | 모든 입력을 같은 latent로 보내 loss를 낮추는 실패 현상. SIGReg가 이를 막는다 |
+| **Ablation** | 제안한 구성 요소를 하나씩 빼 보며, 그 요소가 정말 필요한지 확인하는 실험 |
+| **AUROC** | 점수가 정답을 얼마나 잘 구분하는지 나타내는 지표. 1.0은 완벽한 구분, 0.5는 무작위 수준이다 |
 
 ## Research Questions
 
-- **RQ1.** Interaction gate를 추가하면, collision이 있는 환경에서 latent prediction error와 planning success rate가 개선되는가?
-- **RQ2.** 학습된 gate value `α_t`는 실제 contact event와 정렬되는가? (interpretability)
+- **RQ1.** Interaction gate를 추가하면, collision이 있는 환경에서 prediction과 planning 성능이 좋아지는가?
+- **RQ2.** 모델은 "지금 부딪혔다"를 스스로 알아차리는가? 즉, gate value `α_t`가 실제 contact 순간에 커지는가?
 
 ## Background
 
-- **LeWM** ([arXiv:2603.19312](https://arxiv.org/abs/2603.19312))
-  - pixel observation에서 end-to-end로 학습하는 JEPA world model이다 (~15M parameters).
-  - representation collapse는 SIGReg로 방지한다.
-  - planning은 latent space에서 CEM으로 수행한다.
-- **CF-JEPA** ([arXiv:2610.00727](https://arxiv.org/abs/2610.00727))
-  - LeWM의 192-dim latent를 `z^c` (128-dim)와 `z^u` (64-dim)로 분리한다.
-  - **Controllable predictor** `g(z^c_t, a_t)`: action-conditioned이다.
-  - **Uncontrollable predictor** `h(z^u_t)`: action-free이다.
-  - **Inverse dynamics loss**: `z^c`가 action 정보를 담도록 한다.
-  - **Adversarial dynamics loss** (gradient reversal layer 사용): `z^u`에서 action 정보를 제거한다.
-  - Planning cost는 `z^c`에 대해서만 계산한다.
-  - 공식 코드는 공개되지 않았다.
+**LeWM** ([arXiv:2603.19312](https://arxiv.org/abs/2603.19312))
+- 이미지(pixel)에서 바로 학습하는 작은 JEPA world model이다 (~15M parameters).
+- 우리 연구의 기반 모델이다.
+
+**CF-JEPA** ([arXiv:2610.00727](https://arxiv.org/abs/2610.00727))
+- LeWM의 latent(192-dim)를 `z^c`(128-dim)와 `z^u`(64-dim)로 나눈다.
+- 각 부분을 따로 예측한다:
+  - `z^c`는 `g(z^c_t, a_t)`로 예측하고, action을 입력으로 받는다.
+  - `z^u`는 `h(z^u_t)`로 예측하고, action을 입력으로 받지 않는다.
+- 두 부분을 나누는 방법은 다음과 같다:
+  - **Inverse dynamics loss**: `z^c`의 변화로 action을 맞히게 한다. 그러면 action 관련 정보가 `z^c`에 모인다.
+  - **Adversarial loss (gradient reversal)**: `z^u`로는 action을 못 맞히게 한다. 그러면 `z^u`에서 action 정보가 빠진다.
+- Planning은 `z^c`만 보고 한다. 그래서 `z^u`에 들어간 distractor가 planning을 방해하지 못한다.
+- 공식 코드는 공개되지 않았다.
 
 ## Problem Statement
 
-CF-JEPA §V (Conclusion):
+CF-JEPA §V (Conclusion)에 다음과 같이 적혀 있다:
 
 > "we assume that the uncontrollable part of the scene never affects the controllable part"
+>
+> = "주변 object는 agent에 절대 영향을 주지 않는다고 가정했다"
 
-- **Architectural independence:** `g`는 `z^u`를 input으로 받지 않는다. 그래서 `z^u`에서 `z^c`로 가는 information path가 존재하지 않는다.
-- **Evaluation gap:** 실험에 쓰인 distractor는 이미지 가장자리를 따라 움직이는 colored rectangle이다. agent와 physical contact가 없다.
+이 가정 때문에 생기는 문제는 두 가지다.
+- **Architectural independence:** `z^c`를 예측하는 `g`는 `z^u`를 아예 보지 않는다. 주변 object가 agent를 밀어도 모델은 그 사실을 알 수 없다.
+- **Evaluation gap:** 논문 실험의 distractor는 화면 가장자리를 지나가는 색 사각형뿐이다. 부딪히는 상황은 시험되지 않았다.
 
 ## Proposed Method
 
+기존 예측은 그대로 두고, "주변 object의 영향" 항을 하나 더한다. 그 항 앞에는 0~1 사이의 gate를 둔다.
+
 ```
-ẑ^c_{t+1} = g(z^c_t, a_t) + α_t · h_int(z^c_t, z^u_t, a_t)
-α_t       = σ(MLP([z^c_t, z^u_t, a_t]))
-L         = L_CF-JEPA + ρ · E[α_t]          # sparsity regularization
+ẑ^c_{t+1} = g(z^c_t, a_t)  +  α_t · h_int(z^c_t, z^u_t, a_t)
+            ─────────────     ───   ─────────────────────────
+            기존 CF-JEPA 예측   gate   object가 agent에 주는 영향
+
+α_t = σ(MLP([z^c_t, z^u_t, a_t]))      # 0 = 무시, 1 = 반영
+L   = L_CF-JEPA + ρ · E[α_t]           # sparsity: gate가 괜히 열리면 penalty
 ```
 
-- **`α_t = 0`인 경우:** 모델은 CF-JEPA와 동일해진다. 이 경우 sparsity regularization이 non-interacting distractor에 대한 robustness를 보존한다.
-- **Collision 구간:** `z^u` 없이는 `z^c`의 next state를 예측할 수 없다. 따라서 prediction loss가 gate를 연다.
-- **Planning:** CF-JEPA와 동일하게 `z^c`에 대한 CEM을 사용한다.
+- **Robustness preservation:** 부딪히지 않는 distractor는 예측에 도움이 되지 않는다. 그래서 sparsity penalty 때문에 `α ≈ 0`이 되고, 모델은 CF-JEPA와 같아진다.
+- **Interaction learning:** 부딪히는 순간에는 `z^u` 없이 agent의 다음 위치를 맞힐 수 없다. 그래서 prediction loss가 gate를 연다.
+- **Planning:** CF-JEPA와 똑같이 `z^c`로 CEM을 수행한다. 다만 예측이 collision을 반영하므로, obstacle을 피하는 action이 선택된다.
 
 ## Experimental Setup
 
 | | |
 |---|---|
-| **Env. ① (robustness)** | CF-JEPA와 동일한 non-interacting distractor (N = 2, 8, 16). TwoRoom, PushT |
-| **Env. ② (interaction)** | TwoRoom에 moving obstacle을 추가. contact 시 agent를 push 또는 block. scripted policy로 data를 수집 |
-| **Baselines** | LeWM, CF-JEPA (reimplementation) |
-| **Ablations** | `α = 1` (no gating), sparsity term 제거, `z^u` stop-gradient |
-| **Metrics** | planning success rate, contact / non-contact 구간의 1-step latent prediction error, `α_t`의 contact detection AUROC |
+| **Env. ① Robustness** | CF-JEPA와 같은, 부딪히지 않는 distractor (2·8·16개). TwoRoom, PushT. 기존 강점이 **유지**되는지 확인 |
+| **Env. ② Interaction (new)** | TwoRoom에 움직이는 obstacle을 추가. 닿으면 agent를 밀거나 막는다. **개선**되는지 확인 |
+| **Baselines** | LeWM, CF-JEPA (직접 재구현) |
+| **Ablations** | gate 없이 항상 반영 (`α = 1`), sparsity 제거, `z^u` stop-gradient |
+| **Metrics** | **Success rate** (goal 도달 비율), contact / non-contact 구간별 **prediction error**, `α_t`의 contact 구분 **AUROC** |
 | **Protocol** | 3 seeds × 50 episodes |
 
 **Hypotheses:**
-- Env. ②에서 CF-JEPA 대비 success rate가 +10%p 이상 높다.
-- Env. ①에서 success rate 하락이 3%p 이내다.
-- Contact detection AUROC가 0.8 이상이다.
+- **H1.** Env. ②에서 CF-JEPA보다 success rate가 +10%p 이상 높다.
+- **H2.** Env. ①에서 success rate 하락이 3%p 이내다.
+- **H3.** AUROC가 0.8 이상이다.
 
 ## Timeline
 
 | Date | Milestone |
 |---|---|
-| 10/12 | Proposal. Env. ② prototype, preliminary study |
-| ~10/26 | CF-JEPA reimplementation. Env. ① 결과 재현 (TwoRoom, N=2에서 ≈ 0.95) |
+| 10/12 | Proposal. Env. ② prototype, preliminary study (CF-JEPA가 contact 구간에서 실제로 틀리는지 확인) |
+| ~10/26 | CF-JEPA 재구현. Env. ① 결과 재현 (TwoRoom, distractor 2개에서 ≈ 0.95) |
 | 11/5 | Interim. Env. ② 완성, interaction gate 초기 결과 |
 | 11/26 | Final. 두 환경의 main results, ablations, `α_t` visualization |
 
