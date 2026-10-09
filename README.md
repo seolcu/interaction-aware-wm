@@ -56,13 +56,13 @@ L         = L_CF-JEPA + ρ · mean(α_t)        # 희소성: 평소엔 게이트
 | 11/5 (목) | 중간 발표. 환경 ② 완성, 게이트 첫 결과 |
 | 11/26 (목) | 최종 발표. 두 환경 결과표, ablation, α 시각화 데모 |
 
-## 팀원 (역할은 잠정)
+## 팀원
 
-| 이름 | GitHub | 역할 |
-|---|---|---|
-| 조하은 | [@gkdms04](https://github.com/gkdms04) | 충돌 환경 제작, 데이터 수집 |
-| 설규원 | [@seolcu](https://github.com/seolcu) | CF-JEPA 재구현, 게이트 학습 |
-| 강연우 | [@yeonooe](https://github.com/yeonooe) | 평가·계획 실험, 데모 |
+| 이름 | GitHub |
+|---|---|
+| 강연우 | [@yeonooe](https://github.com/yeonooe) |
+| 조하은 | [@gkdms04](https://github.com/gkdms04) |
+| 설규원 | [@seolcu](https://github.com/seolcu) |
 
 ## 폴더 구조
 
@@ -72,7 +72,6 @@ envs/       충돌 장애물 환경
 configs/    학습·평가 설정
 notebooks/  Colab 실험 노트북
 scripts/    데이터 수집, 학습, 평가 실행 스크립트
-docs/       프로포절, 회의록, 발표 자료
 ```
 
 데이터와 체크포인트는 커밋하지 않습니다(`.gitignore`). Google Drive나 Hugging Face로 공유하세요.
@@ -83,4 +82,3 @@ docs/       프로포절, 회의록, 발표 자료
 - [CF-JEPA 논문](https://arxiv.org/abs/2610.00727) ([HTML](https://arxiv.org/html/2610.00727))
 - [SMWM (Sensorimotor World Models)](https://arxiv.org/abs/2606.20104)
 - [A Control Theory of Predictability in Latent World Models](https://arxiv.org/abs/2607.10362)
-- 프로포절 발표 자료: [docs/proposal.md](docs/proposal.md)
