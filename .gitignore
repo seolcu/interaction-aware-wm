@@ -9,7 +9,7 @@ venv/
 # Notebooks
 .ipynb_checkpoints/
 
-# Data / outputs (공유는 Google Drive나 HF로)
+# Data / outputs
 data/
 checkpoints/
 outputs/
