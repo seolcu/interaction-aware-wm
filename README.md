@@ -1,6 +1,6 @@
-# 부딪히는 순간을 아는 월드 모델
+# Interaction-Aware CF-JEPA: Learning When Uncontrollable Objects Matter
 
-**Interaction-Aware Controllability Factorization for JEPA World Models**
+**상호작용 인지 CF-JEPA: 조종할 수 없는 물체가 중요해지는 순간 학습하기**
 
 아주대학교 2026-2학기 인공지능 팀 프로젝트 (17팀, 발표 2그룹)
 
