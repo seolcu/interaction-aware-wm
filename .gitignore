@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Data / outputs (공유는 Google Drive나 HF로)
+data/
+checkpoints/
+outputs/
+wandb/
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.hdf5
+*.npz
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
