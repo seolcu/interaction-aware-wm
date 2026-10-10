@@ -85,10 +85,22 @@ This file provides guidance to AI agents when working with code in this reposito
 - **2607.10362:** planner가 도달하는 state에서의 예측 충실도가 control 성공을 좌우하고, data 평균 예측 오차와는 거의 무관하다는 분석이다. Controllability와는 관계가 없다. 평가에서 success rate를 주 지표로 두는 근거로 쓴다.
 - **2608.20065 (Orthogonal JEPA):** 저자가 철회했다. 후속 논문 2609.20800(JEPA-Anything)은 범용 factorization이라 인용하지 않는다.
 
+### 구현 자원에서 확인한 사실 (10/10)
+
+- **LeWM 코드:** github.com/lucas-maes/le-wm, MIT. 환경, planning, 평가는 stable-worldmodel을, 학습은 stable-pretraining을 쓴다. 설치는 `uv pip install stable-worldmodel[train,env]`(Python 3.10)이다. README의 예시 명령은 PushT 것뿐이다(`python train.py data=pusht`).
+- **TwoRoom data:** Hugging Face dataset `quentinll/lewm-tworooms`(MIT, gated 아님)다. `tworoom.tar.zst` 약 3.4GB를 받아 `$STABLEWM_HOME`(기본 `~/.stable-wm/`)에 `.h5`로 푼다.
+- **TwoRoom checkpoint:** Hugging Face model `quentinll/lewm-tworooms`(MIT, gated 아님)다. `weights.pt`와 `config.json`, 약 145MB다.
+- **stable-worldmodel:** github.com/galilai-group/stable-worldmodel, MIT. 10/2까지 갱신 중이라 API가 바뀔 수 있다.
+  - TwoRoom은 `stable_worldmodel/envs/two_room/env.py`에 있고, 환경 ID는 `swm/TwoRoom-v1`이다. 데이터 수집 script는 `scripts/data/collect_tworooms.py`다.
+  - 순수 PyTorch로 렌더링과 충돌을 처리한다(224×224, action은 `Box(-1, 1, (2,))`의 속도 방향).
+  - `step()`은 `pos + action * speed`를 구한 뒤 `_apply_collisions()`로 벽과 테두리를 clamp한다.
+  - 따라서 움직이는 obstacle은 subclass로 넣을 수 있다. obstacle 상태를 추가하고, `step()`에서 이동과 push를 처리하고, `_render_frame()`에 그리면 된다.
+  - 새 obstacle은 variation space에 직접 등록하지 않으면 factor of variation으로 다룰 수 없다.
+
 ### 아직 확인하지 않은 것
 
-- LeWM TwoRoom checkpoint와 data를 공개적으로 받을 수 있는지
-- stable-worldmodel의 TwoRoom 환경에 object를 추가하는 난이도
+- CF-JEPA가 distractor를 stable-worldmodel에 어떻게 넣었는지(코드 미공개)
+- LeWM TwoRoom checkpoint의 로딩 방식(`config.json` + `weights.pt`)과, 우리 재구현 코드와의 호환성
 - Iso-Dream++의 학술지 게재본(TPAMI 등) 여부
 
 ## 작업 규칙
@@ -106,7 +118,10 @@ This file provides guidance to AI agents when working with code in this reposito
 ## 외부 자료
 
 - **프로포절 덱 초안:** https://claude.ai/artifact/QNbenSN6xX6ZmDn74ggiKn
-  - 9장이고, 발표자 노트에 예상 질문과 출처가 있다.
+  - 본문 12장과 Appendix(References) 1장이다. Goal / Related Works / Proposed Method 세 파트로 나뉜다.
+  - 발표 6분 기준 시간 배분은 도입 0:20, Part I 1:00, Part II 1:40, Part III 3:00이다.
+  - 발표자 노트에 예상 질문과 출처가 있다.
+  - Part I·II는 최종 발표에도 비슷하게 쓰고, Part III는 팀원이 따로 다시 만든다.
   - 설규원 계정의 Claude artifact다.
   - 실제 발표에 사용할 덱은 따로 제작한다.
 - **팀원 GitHub:** 강연우 yeonooe, 조하은 gkdms04, 설규원 seolcu.
