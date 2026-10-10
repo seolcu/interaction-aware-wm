@@ -87,3 +87,42 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 **결과물:** `outputs/collision_tworoom/demo_seed{0..3}.gif`와 `*_sheet.png`(contact 전후 프레임)다. 로컬에만 있다. Contact 프레임은 주황 테두리, goal 위치는 초록 X로 표시했다. 둘 다 GIF에만 덧그린 시각화이고, env observation에는 goal을 그리지 않는다(TwoRoom 기본값).
 
 **아직 하지 않은 것:** gym ID 등록, variation space 등록, `World`와 `eval.py` 연동, data 수집.
+
+## 2026-10-11 · E2. Oracle 실험: z^u를 보지 않는 predictor의 collision 오차
+
+**목적:** 7번 슬라이드의 주장을 실험으로 확인한다. 주장은 "g의 입력에 z^u가 없으면 collision 순간에 줄일 수 없는 오차가 남는다"는 것이다.
+- Pixel과 encoder는 쓰지 않는다. ground-truth state로 입력 정보 하나만 바꿔 비교한다.
+
+**설정** (`scripts/colab/oracle_irreducible.py`, T4, 약 7분)
+- **Data:** E1 환경에서 scripted policy(goal 직진, noise 0.5)로 모았다.
+  - 학습용은 3000 episodes, 약 9.8만 transition이다.
+  - 평가용은 따로 600 episodes를 모았고, contact step 비율은 13.7%다.
+  - obstacle 없는 대조군도 같은 방식으로 모았다.
+- **예측 대상:** 다음 step의 agent 이동량(Δpos, px)이다.
+- **모델:** 3-layer MLP. Adam lr 1e-3에 cosine schedule을 쓰고, 60 epochs 학습했다. seed는 3개다.
+  - `g`: 입력은 (agent pos, action)이다. CF-JEPA의 g(z^c, a)에 해당한다.
+  - `g + u`: 입력은 (agent pos, obstacle pos·vel, action)이다. u → c 경로가 있는 predictor다.
+
+**결과** (평가용 data의 RMSE, px, 3 seeds 평균±표준편차)
+
+| 환경 | 모델 | non-contact | contact |
+|---|---|---|---|
+| obstacle 없음 | g (h=256) | 0.44 ± 0.03 | - |
+| collision | g (h=256) | 0.94 ± 0.01 | **4.71 ± 0.00** |
+| collision | g (h=1024) | 0.72 ± 0.01 | **4.69 ± 0.00** |
+| collision | g + u (h=256) | 0.86 ± 0.00 | **1.75 ± 0.04** |
+
+**학습 곡선** (마지막 seed, contact RMSE, epoch 12 → 60)
+- g (h=256): 4.70 → 4.71. 줄지 않는다.
+- g (h=1024): 4.67 → 4.69. 줄지 않는다. 같은 기간 non-contact는 1.06에서 0.70으로 줄었다.
+- g + u (h=256): 3.77 → 1.70. 계속 줄었다.
+
+**해석**
+- g의 contact 오차는 약 4.7px다. agent가 한 step에 움직이는 거리(약 5px)와 비슷하다. 즉 부딪히는 순간 g는 한 걸음만큼 틀린다.
+- **capacity를 4배로 늘려도 contact 오차는 그대로였다.** 학습을 오래 해도 epoch 12부터 평평하다. 반면 non-contact 오차는 계속 줄었다. capacity와 학습 시간으로 줄지 않는 오차다. irreducible error 주장과 맞는다.
+- **obstacle 정보를 입력에 넣으면 contact 오차가 63% 줄었다(4.71 → 1.75).** 그러니 부족한 것은 입력 정보다.
+- g + u도 0까지는 내려가지 않았다. push와 벽 처리 때문에 경계가 불연속인데, 작은 MLP가 이를 근사하는 한계로 본다. 확인하지는 않았다.
+
+**한계:** ground-truth 좌표를 쓴 oracle 실험이다. 학습된 latent(z^c, z^u)에서도 같은 차이가 나는지는 본 실험에서 확인한다.
+
+**참고:** 같은 script를 CPU runtime에서 먼저 돌렸지만, h=1024 학습이 45분 넘게 끝나지 않아 중단했다. 학습은 GPU에서 한다.

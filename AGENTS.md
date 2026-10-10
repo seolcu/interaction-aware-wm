@@ -97,10 +97,22 @@ This file provides guidance to AI agents when working with code in this reposito
   - 따라서 움직이는 obstacle은 subclass로 넣을 수 있다. obstacle 상태를 추가하고, `step()`에서 이동과 push를 처리하고, `_render_frame()`에 그리면 된다.
   - 새 obstacle은 variation space에 직접 등록하지 않으면 factor of variation으로 다룰 수 없다.
 
+### 실행 환경에서 확인한 사실 (10/11)
+
+- **실행:** Colab Pro+는 Google 공식 Colab CLI(`google-colab-cli`)로 쓴다. notebook 파일 없이 runtime만 빌려 터미널에서 실행한다. 학교 계정으로 로그인한다.
+- **LeWM TwoRoom 재현:** success 0.86(50 episodes, T4)이다. 논문 값은 0.87이다. 절차와 수치는 `docs/experiments.md` E0에 있다.
+- **설치 함정:** 모두 `scripts/colab/setup_lewm.sh`에 반영했다.
+  - Python은 3.10 venv를 쓴다.
+  - stable-worldmodel은 `[train,env,format]` extra로 설치한다.
+  - `datasets>=3`이 필요하다.
+  - `MPLBACKEND=Agg`를 설정한다.
+  - dataset은 `$STABLEWM_HOME/datasets/`에 둔다.
+- **Checkpoint 호환성:** HF `weights.pt`는 transformers v4의 ViT key 이름이고, stable-pretraining은 v5를 요구한다. `scripts/colab/fix_lewm_keys.py`로 key 이름만 바꾸면 strict load가 된다. stable-worldmodel 0.1.1의 `load_pretrained`는 HF repo 이름을 직접 받는다.
+- **Env. ② prototype:** `envs/collision_tworoom.py`에 있다(E1). 원래 TwoRoom은 goal을 화면에 그리지 않고 agent를 Gaussian blob(σ = radius)으로 그린다.
+
 ### 아직 확인하지 않은 것
 
 - CF-JEPA가 distractor를 stable-worldmodel에 어떻게 넣었는지(코드 미공개)
-- LeWM TwoRoom checkpoint의 로딩 방식(`config.json` + `weights.pt`)과, 우리 재구현 코드와의 호환성
 - Iso-Dream++의 학술지 게재본(TPAMI 등) 여부
 
 ## 작업 규칙
