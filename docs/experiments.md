@@ -46,3 +46,44 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 **실행 기록:** `notebooks/logs/2026-10-11_e0_lewm_baseline_session.ipynb`는 Colab CLI 세션에서 실행한 모든 cell과 출력을 그대로 내보낸 것이다(`colab log -o`). 시행착오도 함께 들어 있다.
 
 **다음:** 같은 pipeline에 Env. ② obstacle을 넣는다(B). CF-JEPA 재구현의 기준선으로 이 0.86을 쓴다.
+
+## 2026-10-11 · E1. Env. ② collision TwoRoom prototype
+
+**목적:** CF-JEPA의 independence assumption이 깨지는 상황, 즉 uncontrollable obstacle이 agent를 미는 환경을 만든다.
+
+**구현:** `envs/collision_tworoom.py`의 `CollisionTwoRoomEnv`는 stable-worldmodel `TwoRoomEnv`의 subclass다.
+- **Obstacle 설정:** 원형 1개, 반지름 14px(agent의 2배), 속도 3~6 px/step이다. 테두리와 중앙 벽에서 반사되어 자기 방에 머문다.
+- **Obstacle은 action과 agent의 영향을 받지 않는다.** 영향은 u → c 한 방향뿐이다.
+- **매 step 처리 순서:**
+  1. agent가 이동한다.
+  2. obstacle이 이동한다.
+  3. 겹치면 agent를 중심선 방향으로 밀어낸다.
+  4. 부모의 벽 처리를 한다.
+  - 벽 처리가 agent를 다시 obstacle 안으로 넣을 수 있어 3~4를 최대 3번 반복한다. 그래도 겹치면 `pinned`로 표시한다.
+- **`info` 추가 항목:** `obstacle_pos`, `obstacle_vel`, `contact`, `pinned`.
+- **Spawn (`crossing`):** agent → target 경로를 가로지르도록 obstacle을 배치한다.
+- **Goal image:** obstacle을 그리지 않는다.
+
+**확인** (`scripts/colab/demo_collision.py`, Colab CPU runtime, 약 16초)
+- `num_obstacles=0`이면 같은 seed와 action에서 궤적이 부모 `TwoRoomEnv`와 정확히 같다(200 steps).
+- 200 episodes 동안 매 step 두 조건을 assert했고 모두 통과했다.
+  - pinned가 아니면 agent와 obstacle이 겹치지 않는다.
+  - push 때문에 agent가 벽 안으로 들어가지 않는다.
+- 부모 TwoRoom 자체에서도 문을 지날 때 agent 중심이 벽 가장자리에 걸치는 일이 있다. obstacle 없이 같은 policy로 200 episode 중 10개였다. 그래서 벽 검사는 contact step에만 적용했다.
+
+**Contact 통계** (`crossing`, goal 직진 + noise scripted policy, 200 episodes)
+
+| 지표 | 값 |
+|---|---|
+| contact가 한 번 이상 있는 episode | 67.5% |
+| contact step 비율 | 13.7% |
+| pinned step 비율 | 0.9% |
+| goal 도달 (100 step 안) | 100% |
+| 평균 episode 길이 | 28.8 steps |
+
+- Contact step 비율은 처음 기대(10% 미만)보다 조금 높다. scripted policy가 obstacle을 피하지 않고 계속 goal 쪽으로 밀고 들어가서 contact가 몇 step씩 이어지기 때문이다.
+- 그래도 대부분의 step은 non-contact이다. 실제 data 수집 설정(spawn, policy)은 C와 본 실험에서 정한다.
+
+**결과물:** `outputs/collision_tworoom/demo_seed{0..3}.gif`와 `*_sheet.png`(contact 전후 프레임)다. 로컬에만 있다. Contact 프레임은 주황 테두리, goal 위치는 초록 X로 표시했다. 둘 다 GIF에만 덧그린 시각화이고, env observation에는 goal을 그리지 않는다(TwoRoom 기본값).
+
+**아직 하지 않은 것:** gym ID 등록, variation space 등록, `World`와 `eval.py` 연동, data 수집.

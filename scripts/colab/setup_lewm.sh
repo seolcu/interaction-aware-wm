@@ -2,6 +2,7 @@
 # Colab VM에서 LeWM TwoRoom baseline 환경을 준비한다.
 # 사용: STABLEWM_HOME=/content/stable-wm bash setup_lewm.sh
 # 이후 python 실행은 /content/venv/bin/python 을 쓴다.
+# SKIP_DATA=1 이면 data와 checkpoint 단계(3, 4)를 건너뛴다. env만 필요할 때 쓴다.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -24,6 +25,8 @@ pip install -q uv
 uv pip install -q --python "$VENV/bin/python" "stable-worldmodel[train,env,format]" huggingface_hub "datasets>=3" "transformers>=5"
 export PATH="$VENV/bin:$PATH"
 python -c "import stable_worldmodel as swm, stable_pretraining; print('swm', swm.__version__ if hasattr(swm,'__version__') else 'ok')"
+
+if [ "${SKIP_DATA:-0}" = "1" ]; then echo "SKIP_DATA=1: 3, 4단계 생략"; echo "SETUP DONE"; exit 0; fi
 
 echo "[3/4] HF data download (checkpoint는 4단계에서 받는다)"
 hf download quentinll/lewm-tworooms --repo-type dataset --local-dir "$STABLEWM_HOME/hf_tworooms_data"
