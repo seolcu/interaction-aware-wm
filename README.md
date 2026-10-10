@@ -1,6 +1,6 @@
 # Interaction-Aware CF-JEPA: Learning When Uncontrollable Objects Matter
 
-**상호작용 인지 CF-JEPA: 조종할 수 없는 물체가 중요해지는 순간 학습하기**
+**Interaction-Aware CF-JEPA: 비제어 요소와의 상호작용을 선택적으로 반영하는 JEPA world model**
 
 Research proposal · Artificial Intelligence, Ajou University (Fall 2026)
 
