@@ -1,0 +1,46 @@
+# CF-JEPA (src/iawm/cfjepa.py). encoder, projector, action encoder는 LeWM과 같다.
+_target_: iawm.cfjepa.CFJEPA
+action_dim: ???       # train.py가 frameskip × action dim으로 채운다
+head_hidden_dim: 512
+grl_scale: 1.0
+cost: sum_l2          # 논문 Eq. 7. LeWM 방식은 last_mse
+
+encoder:
+  _target_: stable_pretraining.backbone.utils.vit_hf
+  size: tiny
+  patch_size: 14
+  image_size: ${img_size}
+  pretrained: false
+  use_mask_token: false
+
+predictor:
+  _target_: iawm.cfjepa.FactorizedPredictor
+  num_frames: ${history_size}
+  dim_c: 128
+  dim_u: 64
+  g_hidden_dim: ${embed_dim}
+  g_depth: 6
+  g_heads: 16
+  g_dim_head: 64
+  g_mlp_dim: 2048
+  h_hidden_dim: 128
+  h_depth: 3
+  h_heads: 8
+  h_dim_head: 32
+  h_mlp_dim: 512
+  dropout: 0.1
+  proj_hidden_dim: 2048
+
+action_encoder:
+  _target_: stable_worldmodel.wm.lewm.module.Embedder
+  input_dim: ???
+  emb_dim: 128        # g의 입력 차원(dim_c)과 같아야 한다
+
+projector:
+  _target_: stable_worldmodel.wm.lewm.module.MLP
+  input_dim: ${embed_dim}
+  output_dim: ${embed_dim}
+  hidden_dim: 2048
+  norm_fn:
+    _target_: torch.nn.BatchNorm1d
+    _partial_: true

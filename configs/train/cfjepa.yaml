@@ -1,0 +1,52 @@
+# CF-JEPA 학습 설정. 값은 CF-JEPA §III-D와 LeWM config(le-wm/config/train/lewm.yaml)를 따른다.
+defaults:
+  - _self_
+  - data: tworoom
+  - model: cfjepa
+  - override hydra/launcher: basic
+
+output_model_name: cfjepa_tworoom_n2
+
+num_workers: 8
+train_split: 0.9
+seed: 3072
+img_size: 224
+embed_dim: 192
+history_size: 3
+num_preds: 1
+
+distractor:
+  num: 2          # CF-JEPA 기본값 N=2. 0이면 끈다.
+
+trainer:
+  max_epochs: 10  # CF-JEPA는 10 epochs (LeWM 기본값은 100)
+  devices: 1
+  accelerator: gpu
+  precision: bf16-mixed
+  gradient_clip_val: 1.0
+
+loader:
+  batch_size: 128
+  num_workers: ${num_workers}
+  persistent_workers: True
+  prefetch_factor: 3
+  pin_memory: True
+
+optimizer:
+  type: AdamW
+  lr: 5e-5
+  weight_decay: 1e-3
+
+loss:
+  inv_weight: 3.0      # 논문의 α. TwoRoom 값
+  adv_weight: 1.0      # 논문의 β
+  sigreg_weight: 0.09  # 논문의 γ
+  sigreg_kwargs:
+    knots: 17
+    num_proj: 1024
+
+wandb:
+  enabled: False
+  config:
+    project: iawm
+    name: ${output_model_name}
