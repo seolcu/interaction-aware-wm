@@ -200,4 +200,19 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 
 - 이 data로 `scripts/train.py`(CPU, 3 step)와 `scripts/eval.py --config-name=collision_tworoom`(random policy, 5 episode)이 끝까지 돈다.
 
-**본 수집:** 1만 episode를 수집 중이다. 결과는 끝나면 채운다.
+**본 수집 결과** (Colab CPU high-mem, 63분, `collision_tworoom.h5` 압축 후 6.10GB)
+
+| 지표 | Collision TwoRoom | 원래 TwoRoom |
+|---|---|---|
+| episode | 10,000 | 10,000 |
+| frame | 659,451 | 920,809 |
+| episode당 평균 step | 65.9 | 92.1 |
+| contact step 비율 | 7.3% | - |
+| pinned step 비율 | 0.5% | - |
+| contact가 한 번 이상 있는 episode | 73.5% | - |
+| goal 도달 episode (100 step 안) | 68.4% | (확인 안 함) |
+
+- Contact는 대부분 episode에서 한 번 이상 일어나고, step 단위로는 7% 정도다. Gate는 "드물게 켜지는" 신호를 배우게 된다.
+- Episode가 원래보다 짧다(66 vs 92 step). 원래 data의 episode 길이 분포는 확인하지 않았다. 같은 정책이므로 차이는 obstacle과 수집 code 경로(collect 버전) 중 하나에서 생겼을 것으로 보지만, 원인은 확인하지 않았다. Frame 수가 원래의 72%라 학습 1 epoch도 그만큼 짧아진다.
+- 공유: data 파일은 올리지 않는다. 같은 data가 필요하면 `python scripts/collect_collision.py`를 실행한다(seed 3072, CPU로 약 1시간).
+- 다음: 이 data로 CF-JEPA와 gate를 학습한다(강연우). 평가는 `bash scripts/colab/eval_cfjepa.sh`가 아니라 `python scripts/eval.py --config-name=collision_tworoom policy=<checkpoint>`로 한다.
