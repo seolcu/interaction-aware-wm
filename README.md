@@ -123,9 +123,8 @@ L   = L_CF-JEPA + ρ · E[α_t]           # sparsity: gate가 괜히 열리면 p
 | Date | Milestone |
 |---|---|
 | 10/12 | Proposal. Env. ② prototype, preliminary study (CF-JEPA가 contact 구간에서 실제로 틀리는지 확인) |
-| ~10/26 | CF-JEPA 재구현. Env. ① 결과 재현 (TwoRoom, distractor 2개에서 ≈ 0.95) |
-| 11/5 | Interim. Env. ② 완성, interaction gate 초기 결과 |
-| 11/26 | Final. 두 환경의 main results, ablations, `α_t` visualization |
+| 11/5 | Interim. CF-JEPA 재구현과 Env. ① 결과 재현 (TwoRoom, distractor 2개에서 ≈ 0.95), Env. ② 완성, interaction gate 초기 결과 |
+| 11/26 | Final. 두 환경의 main results, obstacle 개수별 결과, ablations, `α_t` visualization |
 
 ## Repository Structure
 
