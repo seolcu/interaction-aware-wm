@@ -8,6 +8,7 @@ This file provides guidance to AI agents when working with code in this reposito
 
 - 아주대학교 2026-2학기 인공지능 수업의 팀 프로젝트다.
 - 발표 일정: 프로포절 10/12, 중간 11/5, 최종 11/26.
+  - 중간 발표는 5분 안에 프로포절 이후 바뀐 것만 발표한다(10/29 수업 공지).
 - 평가 기준 (수업에서 강조된 것):
   - 직접 학습해서 성능이 수치로 개선되는가
   - 최신(2025~26) baseline을 쓰는가
@@ -16,6 +17,14 @@ This file provides guidance to AI agents when working with code in this reposito
   - prompt engineering, agent, RAG 위주가 아닌가
   - 결과의 성패보다 과정과 노력이 드러나는가
 - 연산 자원은 Colab Pro+를 활용한다.
+
+## 발표 피드백 요약
+
+- 기존 benchmark task의 success rate를 함께 제시한다. Collision env는 우리가 만든 환경이므로 Distractor env(기존 task) 결과를 함께 앞세운다.
+- 선행연구를 충분히 조사한다.
+- Obstacle이 많아질 때(object 간 다중 관계, 조합 수 증가) 모델링할 수 있는지 답한다. 현재 gate `α_t`는 `z^u` 전체에 대한 scalar 하나라 직접 해당되는 질문이다. Collision env의 obstacle 개수를 늘리는 실험으로 답하고, 안 되면 한계와 향후 과제로 정리한다.
+- 중간 발표에는 제안 모델(gate)의 결과가 있어야 한다.
+- 성능이 꼭 SOTA일 필요는 없고, 과정과 그 과정에서 배운 것을 보여 준다.
 
 ## 결정 사항과 이유
 
@@ -26,7 +35,6 @@ This file provides guidance to AI agents when working with code in this reposito
   - 2D라 collision obstacle을 추가하기 쉽다.
   - CF-JEPA 성능이 높아서(0.95) 차이가 깨끗하게 보인다.
   - PushT는 Env. ①(robustness 유지 확인)에만 쓴다.
-- **전환 계획:** 10/26까지 CF-JEPA 재구현이 Env. ① 수치를 재현하지 못하면, "LeWM + gate" 단순화 버전으로 전환한다. 이때 환경은 그대로 재사용한다.
 
 ## 원문에서 확인한 사실
 
@@ -130,10 +138,12 @@ This file provides guidance to AI agents when working with code in this reposito
 ## 외부 자료
 
 - **프로포절 덱 초안:** https://claude.ai/artifact/QNbenSN6xX6ZmDn74ggiKn
-  - 본문 12장과 Appendix(References) 1장이다. Goal / Related Works / Proposed Method 세 파트로 나뉜다.
-  - 발표 6분 기준 시간 배분은 도입 0:20, Part I 1:00, Part II 1:40, Part III 3:00이다.
+  - 표지와 Part II(Related Works) 3장(Preliminaries / Related Work / Problem), 총 4장이다.
+  - Part I(Goal), Part III(Proposed Method), Agenda, Appendix(References)는 10/11에 덱에서 지웠다. Artifact의 이전 버전에 남아 있어 복원할 수 있다.
+  - 같은 날 슬라이드와 발표자 노트의 문장을 im-not-ai(humanize-korean)의 AI 티 제거 규칙으로 다듬었다.
+  - 발표 6분 기준 Part II 배정 시간은 1:40이다.
   - 발표자 노트에 예상 질문과 출처가 있다.
-  - Part I·II는 최종 발표에도 비슷하게 쓰고, Part III는 팀원이 따로 다시 만든다.
+  - Part III는 팀원이 따로 다시 만든다.
   - 설규원 계정의 Claude artifact다.
   - 실제 발표에 사용할 덱은 따로 제작한다.
 - **팀원 GitHub:** 강연우 yeonooe, 조하은 gkdms04, 설규원 seolcu.

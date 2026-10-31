@@ -107,7 +107,7 @@ L   = L_CF-JEPA + ρ · E[α_t]           # sparsity: gate가 괜히 열리면 p
 | | |
 |---|---|
 | **Env. ① Robustness** | CF-JEPA와 같은, 부딪히지 않는 distractor (2·8·16개). TwoRoom, PushT. 기존 강점이 **유지**되는지 확인 |
-| **Env. ② Interaction (new)** | TwoRoom에 움직이는 obstacle을 추가. 닿으면 agent를 밀거나 막는다. **개선**되는지 확인 |
+| **Env. ② Interaction (new)** | TwoRoom에 움직이는 obstacle을 추가. 닿으면 agent를 밀거나 막는다. **개선**되는지 확인. Obstacle 1개에서 시작해 개수를 늘려, 여러 object와 동시에 interaction할 때도 효과가 유지되는지 본다 |
 | **Baselines** | LeWM, CF-JEPA (직접 재구현) |
 | **Ablations** | gate 없이 항상 반영 (`α = 1`), sparsity 제거, `z^u` stop-gradient |
 | **Metrics** | **Success rate** (goal 도달 비율), contact / non-contact 구간별 **prediction error**, `α_t`의 contact 구분 **AUROC** |
