@@ -9,11 +9,12 @@ stable-worldmodel의 TwoRoomEnv를 subclass한다. 바꾸는 것은 obstacle 하
 - num_obstacles=0이면 부모 TwoRoomEnv와 궤적이 완전히 같다.
 - Goal image(_target_img)에는 obstacle을 그리지 않는다. 부모 reset() 안에서
   그려지는데, 그 시점에는 obstacle이 아직 없다.
-- Variation space와 gym ID에는 등록하지 않았다.
+- import하면 gym ID `iawm/CollisionTwoRoom-v1`로 등록된다. Variation space에는 등록하지 않았다.
 """
 
 from __future__ import annotations
 
+import gymnasium as gym
 import numpy as np
 import torch
 from stable_worldmodel.envs.two_room.env import TwoRoomEnv
@@ -77,6 +78,21 @@ class CollisionTwoRoomEnv(TwoRoomEnv):
         info = self._get_info()
         info['distance_to_target'] = dist
         return self._get_obs(), 0.0, terminated, False, info
+
+    # ---------------- 평가 pipeline (World.evaluate) ----------------
+
+    def _set_goal_state(self, goal_state):
+        """평가 때 World가 _set_state, _set_goal_state 순서로 시작 위치와 목표를 dataset 값으로 바꾼다.
+
+        reset 때 놓은 obstacle은 바뀌기 전 위치 기준이므로, 목표까지 정해진 뒤 다시 놓는다.
+        Goal image에 obstacle이 그려지지 않도록 먼저 비우고 부모를 부른다.
+        """
+        self.obstacle_pos = torch.zeros((0, 2), dtype=torch.float32)
+        self.obstacle_vel = torch.zeros((0, 2), dtype=torch.float32)
+        super()._set_goal_state(goal_state)
+        self.contact = False
+        self.pinned = False
+        self._spawn_obstacles()
 
     # ---------------- Obstacles ----------------
 
@@ -184,3 +200,8 @@ class CollisionTwoRoomEnv(TwoRoomEnv):
             alpha = (self.obstacle_radius + 0.5 - dist).clamp(0, 1)  # 가장자리 1px anti-alias
             img = self._alpha_blend(img, alpha, self.OBSTACLE_COLOR)
         return img
+
+
+ENV_ID = 'iawm/CollisionTwoRoom-v1'
+if ENV_ID not in gym.registry:
+    gym.register(id=ENV_ID, entry_point=f'{__name__}:CollisionTwoRoomEnv')

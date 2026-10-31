@@ -1,12 +1,13 @@
 """Planning 평가 script. LeWM의 eval.py(github.com/lucas-maes/le-wm, commit 8edfeb3, MIT)를 고쳐 쓴다.
 
 바꾼 것:
-- repo의 src/와 envs/를 import path에 넣고, distractor TwoRoom env를 등록한다.
+- repo의 src/와 envs/를 import path에 넣고, Distractor TwoRoom과 Collision TwoRoom env를 등록한다.
 - 결과 파일을 $STABLEWM_HOME/results/<output.filename>에 쓴다.
 
 사용 예:
     python scripts/eval.py policy=cfjepa_tworoom_n2/weights_epoch_10.pt world.num_distractors=2
     python scripts/eval.py policy=lewm-tworooms world.num_distractors=0   # E0 재현
+    python scripts/eval.py --config-name=collision_tworoom policy=<checkpoint>   # Collision TwoRoom
 """
 
 import os
@@ -15,6 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'src'), str(ROOT)]
+import envs.collision_tworoom  # noqa: E402,F401  (gym 등록)
 import envs.distractor_tworoom  # noqa: E402,F401  (gym 등록)
 
 os.environ["MUJOCO_GL"] = "egl"

@@ -1,0 +1,49 @@
+# Collision TwoRoom 평가. tworoom.yaml과 같고 환경과 dataset만 다르다.
+# 시작 상태와 goal은 Collision TwoRoom data(scripts/collect_collision.py)에서 뽑는다.
+# CEM 300 samples × 30 iterations, horizon 5, receding horizon 5 (CF-JEPA §III-D와 같다).
+defaults:
+  - solver: cem
+  - override hydra/launcher: basic
+  - _self_
+
+cache_dir: null
+
+world:
+  env_name: iawm/CollisionTwoRoom-v1
+  num_obstacles: 1
+  spawn_mode: crossing
+  num_envs: ${eval.num_eval}
+  max_episode_steps: ???
+
+seed: 42
+policy: random # checkpoint 이름 또는 random
+
+dataset:
+  stats: ${eval.dataset_name}
+  keys_to_cache:
+    - action
+    - proprio
+
+plan_config:
+  horizon: 5
+  receding_horizon: 5
+  action_block: 5 # frameskip
+
+eval:
+  num_eval: 50
+  goal_offset_steps: 25
+  eval_budget: 50
+  img_size: 224
+  dataset_name: collision_tworoom
+  callables:
+    - method: _set_state
+      args:
+        state:
+          value: proprio
+    - method: _set_goal_state
+      args:
+        goal_state:
+          value: goal_proprio
+
+output:
+  filename: collision_tworoom_results.txt
