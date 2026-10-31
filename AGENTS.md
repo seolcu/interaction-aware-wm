@@ -35,6 +35,9 @@ This file provides guidance to AI agents when working with code in this reposito
   - 2D라 collision obstacle을 추가하기 쉽다.
   - CF-JEPA 성능이 높아서(0.95) 차이가 깨끗하게 보인다.
   - PushT는 Env. ①(robustness 유지 확인)에만 쓴다.
+- **중간 발표(11/5) 우선순위 (11/1):** ① CF-JEPA 재구현과 TwoRoom N=2 재현, ② Env. ② 완성, ③ gate 초기 결과, ④ obstacle 개수 늘리기.
+  - ④는 중간 발표 범위에서 빼지 않는다. 시간이 남으면 시도하되 1순위는 아니다.
+- **실행 위치:** 코드는 로컬에서 쓰고, 실행(smoke test 포함)은 Colab에서 한다. 로컬에는 Python 3.10이 없다.
 
 ## 원문에서 확인한 사실
 
@@ -137,13 +140,15 @@ This file provides guidance to AI agents when working with code in this reposito
 
 ## 외부 자료
 
-- **프로포절 덱 초안:** https://claude.ai/artifact/QNbenSN6xX6ZmDn74ggiKn
-  - 표지와 Part II(Related Works) 3장(Preliminaries / Related Work / Problem), 총 4장이다.
-  - Part I(Goal), Part III(Proposed Method), Agenda, Appendix(References)는 10/11에 덱에서 지웠다. Artifact의 이전 버전에 남아 있어 복원할 수 있다.
-  - 같은 날 슬라이드와 발표자 노트의 문장을 im-not-ai(humanize-korean)의 AI 티 제거 규칙으로 다듬었다.
-  - 발표 6분 기준 Part II 배정 시간은 1:40이다.
-  - 발표자 노트에 예상 질문과 출처가 있다.
-  - Part III는 팀원이 따로 다시 만든다.
-  - 설규원 계정의 Claude artifact다.
-  - 실제 발표에 사용할 덱은 따로 제작한다.
+- **팀 공유 폴더 (Proton Drive):** `/my-files/문서/interaction-aware-wm` (설규원 계정, 링크 공유)
+  - git에 넣기 애매한 파일(영상, 그림, 결과 파일, 발표 자료)은 여기에 둔다. 코드와 실험 일지는 GitHub에 둔다.
+  - 현재 내용: `README.txt`(폴더 안내), `results/E0_lewm_tworoom_baseline`, `results/E1_collision_tworoom`, `results/E2_oracle`, `인공지능_17팀_발표자료.pptx`.
+  - 로컬에 Proton Drive CLI(`proton-drive`, `~/.local/bin`)가 있으면 그것을 쓴다.
+    - 목록: `proton-drive filesystem list <path>`
+    - 내려받기: `proton-drive filesystem download <path>... <localFolder>`
+    - 올리기: `proton-drive filesystem upload <localPath>... <parentPath>`
+- **프로포절 발표 자료:** 공유 폴더의 `인공지능_17팀_발표자료.pptx` (팀원 제작, 10/12 발표에 사용, 9장)
+  - 구성: 표지 / Topic / Motivation / Objectives / Background(CF-JEPA, TwoRoom 0.87·0.95 / 0.33·0.95, §V 인용) / Related Works / Proposed Method / Baseline Reproduction(LeWM 0.86) / Collision TwoRoom(seed 0~3 frame, "추후: 충돌·비충돌 구간의 예측 오차와 α_t 비교").
+  - 슬라이드 글자가 모두 이미지라 python-pptx로는 텍스트가 나오지 않는다. `soffice --headless --convert-to pdf`로 바꿔서 본다.
+  - E2 oracle 실험은 분량 때문에 일부러 넣지 않았다. 중간 발표에서 활용한다.
 - **팀원 GitHub:** 강연우 yeonooe, 조하은 gkdms04, 설규원 seolcu.
