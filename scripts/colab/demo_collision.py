@@ -1,4 +1,4 @@
-"""Env. ② prototype 확인: sanity check, contact 통계, demo GIF.
+"""Collision env prototype 확인: sanity check, contact 통계, demo GIF.
 
 사용 (repo root를 PYTHONPATH에 둔다):
   PYTHONPATH=/content/iawm python demo_collision.py --out /content/outputs/collision_tworoom

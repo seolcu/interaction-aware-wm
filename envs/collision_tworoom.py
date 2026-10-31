@@ -1,4 +1,4 @@
-"""Env. ②: 움직이는 obstacle이 agent를 미는 TwoRoom.
+"""Collision env: 움직이는 obstacle이 agent를 미는 TwoRoom.
 
 stable-worldmodel의 TwoRoomEnv를 subclass한다. 바꾸는 것은 obstacle 하나뿐이다.
 

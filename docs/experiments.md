@@ -4,7 +4,7 @@
 
 ## 2026-10-11 · E0. LeWM TwoRoom baseline 재현
 
-**목적:** 공개 LeWM TwoRoom checkpoint가 우리 Colab 환경에서 논문 수치를 재현하는지 확인한다. 이후 CF-JEPA 재구현과 Env. ②의 출발점이다.
+**목적:** 공개 LeWM TwoRoom checkpoint가 우리 Colab 환경에서 논문 수치를 재현하는지 확인한다. 이후 CF-JEPA 재구현과 Collision env의 출발점이다.
 
 **환경**
 - Colab Pro+, Tesla T4 1장. Google Colab CLI(`google-colab-cli`)로 실행했다.
@@ -45,9 +45,9 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 
 **실행 기록:** `notebooks/logs/2026-10-11_e0_lewm_baseline_session.ipynb`는 Colab CLI 세션에서 실행한 모든 cell과 출력을 그대로 내보낸 것이다(`colab log -o`). 시행착오도 함께 들어 있다.
 
-**다음:** 같은 pipeline에 Env. ② obstacle을 넣는다(B). CF-JEPA 재구현의 기준선으로 이 0.86을 쓴다.
+**다음:** 같은 pipeline에 Collision env obstacle을 넣는다(B). CF-JEPA 재구현의 기준선으로 이 0.86을 쓴다.
 
-## 2026-10-11 · E1. Env. ② collision TwoRoom prototype
+## 2026-10-11 · E1. Collision TwoRoom prototype
 
 **목적:** CF-JEPA의 independence assumption이 깨지는 상황, 즉 uncontrollable obstacle이 agent를 미는 환경을 만든다.
 
@@ -127,7 +127,7 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 
 **참고:** 같은 script를 CPU runtime에서 먼저 돌렸지만, h=1024 학습이 45분 넘게 끝나지 않아 중단했다. 학습은 GPU에서 한다.
 
-## 2026-11-01 · E3. CF-JEPA 재구현과 Env. ① (TwoRoom, distractor N=2)
+## 2026-11-01 · E3. CF-JEPA 재구현과 Distractor TwoRoom (N=2)
 
 **목적:** 교수님 요청대로 기존 task(TwoRoom)에서 CF-JEPA 수치를 재현한다. 목표는 CF-JEPA Table III의 0.95(N=2)다. 이후 gate 실험의 baseline이 된다.
 

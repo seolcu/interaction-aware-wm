@@ -34,9 +34,9 @@ This file provides guidance to AI agents when working with code in this reposito
 - **주 환경:** TwoRoom이다.
   - 2D라 collision obstacle을 추가하기 쉽다.
   - CF-JEPA 성능이 높아서(0.95) 차이가 깨끗하게 보인다.
-  - PushT는 Env. ①(robustness 유지 확인)에만 쓴다.
-- **중간 발표(11/5) 우선순위 (11/1):** ① CF-JEPA 재구현과 TwoRoom N=2 재현, ② Env. ② 완성, ③ gate 초기 결과, ④ obstacle 개수 늘리기.
-  - ④는 중간 발표 범위에서 빼지 않는다. 시간이 남으면 시도하되 1순위는 아니다.
+  - PushT는 Distractor env(robustness 유지 확인)에만 쓴다.
+- **중간 발표(11/5) 우선순위 (11/1):** 1) CF-JEPA 재구현과 TwoRoom N=2 재현, 2) Collision env 완성, 3) gate 초기 결과, 4) obstacle 개수 늘리기.
+  - 4)는 중간 발표 범위에서 빼지 않는다. 시간이 남으면 시도하되 1순위는 아니다.
 - **실행 위치:** 코드는 로컬에서 쓰고, 실행(smoke test 포함)은 Colab에서 한다. 로컬에는 Python 3.10이 없다.
 
 ## 원문에서 확인한 사실
@@ -119,7 +119,7 @@ This file provides guidance to AI agents when working with code in this reposito
   - `MPLBACKEND=Agg`를 설정한다.
   - dataset은 `$STABLEWM_HOME/datasets/`에 둔다.
 - **Checkpoint 호환성:** HF `weights.pt`는 transformers v4의 ViT key 이름이고, stable-pretraining은 v5를 요구한다. `scripts/colab/fix_lewm_keys.py`로 key 이름만 바꾸면 strict load가 된다. stable-worldmodel 0.1.1의 `load_pretrained`는 HF repo 이름을 직접 받는다.
-- **Env. ② prototype:** `envs/collision_tworoom.py`에 있다(E1). 원래 TwoRoom은 goal을 화면에 그리지 않고 agent를 Gaussian blob(σ = radius)으로 그린다.
+- **Collision env prototype:** `envs/collision_tworoom.py`에 있다(E1). 원래 TwoRoom은 goal을 화면에 그리지 않고 agent를 Gaussian blob(σ = radius)으로 그린다.
 
 ### 아직 확인하지 않은 것
 
@@ -137,10 +137,11 @@ This file provides guidance to AI agents when working with code in this reposito
   - 기호 z^c, z^u, α_t, g, h, h_int는 README와 같은 뜻으로 쓴다.
   - 코드 변수명도 이를 따른다: `z_c`, `z_u`, `alpha`, `h_int`.
 - **커밋 메시지:** 영어로 쓴다.
+- **환경 이름 (11/1 정함):** 실험 환경은 영어 이름으로만 부른다. 충돌하지 않는 사각형이 있는 환경은 **Distractor env**(TwoRoom이면 Distractor TwoRoom), 움직이는 obstacle이 agent를 미는 환경은 **Collision env**(Collision TwoRoom)다. 예전 표기(Env 뒤에 동그라미 숫자)와 한국어 이름(사각형 환경, 충돌 환경)은 쓰지 않는다.
 
 ## 협업 규칙 (11/1 정함)
 
-- **역할 (중간 발표까지):** 강연우는 gate 구현과 모델 학습, 설규원은 충돌 환경과 data, 조하은은 평가와 발표 준비를 맡는다. CF-JEPA 재구현은 설규원이 했다(E3).
+- **역할 (중간 발표까지):** 강연우는 gate 구현과 모델 학습, 설규원은 Collision env와 data, 조하은은 평가와 발표 준비를 맡는다. CF-JEPA 재구현은 설규원이 했다(E3).
 - **코드 (GitHub):** 팀원 3명 모두 collaborator다. 작업 단위로 branch(`<이름>/<작업>`, 예: `yeonwoo/gate`)를 만들고 PR로 main에 합친다.
 - **결과물 (Proton Drive):** 그림, 영상, checkpoint, data는 공유 폴더의 `results/E<번호>_<이름>/`에 올리고, 폴더의 `README.txt`에 한 줄 설명을 더한다.
 - **실험 기록:** `docs/experiments.md`에 E 번호를 이어서 붙인다(현재 E3까지). 목적, 설정, 실행 명령, 결과, 남은 문제를 적는다. 실험 번호를 먼저 정하고 쓰면 번호가 겹치지 않는다.

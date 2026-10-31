@@ -1,4 +1,4 @@
-"""Env. ①: CF-JEPA식 visual distractor가 있는 TwoRoom.
+"""Distractor env: CF-JEPA식 visual distractor가 있는 TwoRoom.
 
 stable-worldmodel의 TwoRoomEnv를 subclass하고, `render()`가 돌려주는 frame에만
 사각형을 덧그린다. 사각형은 그림일 뿐이라 agent와 충돌하지 않고, 상태와 dynamics는

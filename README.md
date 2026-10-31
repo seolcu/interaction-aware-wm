@@ -106,24 +106,24 @@ L   = L_CF-JEPA + ρ · E[α_t]           # sparsity: gate가 괜히 열리면 p
 
 | | |
 |---|---|
-| **Env. ① Robustness** | CF-JEPA와 같은, 부딪히지 않는 distractor (2·8·16개). TwoRoom, PushT. 기존 강점이 **유지**되는지 확인 |
-| **Env. ② Interaction (new)** | TwoRoom에 움직이는 obstacle을 추가. 닿으면 agent를 밀거나 막는다. **개선**되는지 확인. Obstacle 1개에서 시작해 개수를 늘려, 여러 object와 동시에 interaction할 때도 효과가 유지되는지 본다 |
+| **Distractor env** (robustness) | CF-JEPA와 같은, 부딪히지 않는 distractor (2·8·16개). TwoRoom, PushT. 기존 강점이 **유지**되는지 확인 |
+| **Collision env** (interaction, new) | TwoRoom에 움직이는 obstacle을 추가. 닿으면 agent를 밀거나 막는다. **개선**되는지 확인. Obstacle 1개에서 시작해 개수를 늘려, 여러 object와 동시에 interaction할 때도 효과가 유지되는지 본다 |
 | **Baselines** | LeWM, CF-JEPA (직접 재구현) |
 | **Ablations** | gate 없이 항상 반영 (`α = 1`), sparsity 제거, `z^u` stop-gradient |
 | **Metrics** | **Success rate** (goal 도달 비율), contact / non-contact 구간별 **prediction error**, `α_t`의 contact 구분 **AUROC** |
 | **Protocol** | 3 seeds × 50 episodes |
 
 **Hypotheses:**
-- **H1.** Env. ②에서 CF-JEPA보다 success rate가 +10%p 이상 높다.
-- **H2.** Env. ①에서 success rate 하락이 3%p 이내다.
+- **H1.** Collision env에서 CF-JEPA보다 success rate가 +10%p 이상 높다.
+- **H2.** Distractor env에서 success rate 하락이 3%p 이내다.
 - **H3.** AUROC가 0.8 이상이다.
 
 ## Timeline
 
 | Date | Milestone |
 |---|---|
-| 10/12 | Proposal. Env. ② prototype, preliminary study (CF-JEPA가 contact 구간에서 실제로 틀리는지 확인) |
-| 11/5 | Interim. CF-JEPA 재구현과 Env. ① 결과 재현 (TwoRoom, distractor 2개에서 ≈ 0.95), Env. ② 완성, interaction gate 초기 결과 |
+| 10/12 | Proposal. Collision env prototype, preliminary study (CF-JEPA가 contact 구간에서 실제로 틀리는지 확인) |
+| 11/5 | Interim. CF-JEPA 재구현과 Distractor env 결과 재현 (TwoRoom, distractor 2개에서 ≈ 0.95), Collision env 완성, interaction gate 초기 결과 |
 | 11/26 | Final. 두 환경의 main results, obstacle 개수별 결과, ablations, `α_t` visualization |
 
 ## Repository Structure
