@@ -186,7 +186,7 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 - 평가 결과와 영상(episode별 mp4, agent / dataset / goal 3분할): Proton Drive `results/E3_cfjepa_tworoom/eval/`, 로컬 `outputs/cfjepa/eval/`.
 
 **남은 문제**
-- 논문 조건의 LeWM baseline(N=2로 학습)이 없다. 중간 발표 표에서 "LeWM 0.33"은 논문 인용으로 표시해야 한다.
+- 논문 조건의 LeWM baseline은 E5에서 학습했다(N=2 평가 0.30).
 - Seed 1개다. 최종 발표 전 3 seed로 늘린다(11/1 결정).
 
 ## 2026-11-01 · E4. Collision TwoRoom 학습 data
@@ -237,3 +237,31 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 - Episode가 원래보다 짧다(66 vs 92 step). 원래 data는 62%의 episode가 길이 101(시간 초과)이고 goal 도달은 40%뿐이다. 우리 data는 goal에 더 자주 도달해서 일찍 끝난다. Obstacle이 있는데도 더 자주 도달하므로 obstacle 때문은 아니다. 원래 data가 다른 env 버전(stable-worldmodel에 `legacy_env.py`가 따로 있다)이나 다른 설정으로 모였을 가능성이 있지만 확인하지 않았다. Frame 수가 원래의 72%라 학습 1 epoch도 그만큼 짧아진다.
 - 공유: data 파일은 올리지 않는다. 같은 data가 필요하면 `python scripts/collect_collision.py`를 실행한다(seed 3072, CPU로 약 1시간).
 - 다음: 이 data로 CF-JEPA와 gate를 학습한다(강연우). 평가는 `bash scripts/colab/eval_cfjepa.sh`가 아니라 `python scripts/eval.py --config-name=collision_tworoom policy=<checkpoint>`로 한다.
+
+## 2026-11-01 · E5. LeWM을 distractor(N=2) 화면으로 학습
+
+**목적:** E3에서 공개 LeWM(깨끗한 data로 학습)은 N=2에서 0.84로 거의 무너지지 않았다. 논문 Table III는 "All models were trained with images augmented with N=2 distractors"라서 조건이 다르다. 논문과 같은 조건의 LeWM baseline을 직접 학습해, CF-JEPA와 공정하게 비교한다.
+
+**설정:** E3와 학습 data, distractor augmentation, epoch, batch, optimizer, seed(3072)가 모두 같고 모델만 LeWM이다(loss = L_fwd + 0.09·SIGReg).
+- 명령: `bash scripts/colab/train_cfjepa.sh model=lewm output_model_name=lewm_tworoom_n2`
+- Colab A100, 11/1 11:29~16:43 KST(약 5시간 10분).
+- Validation loss (epoch 1 → 10): fwd 0.029 → 0.008, SIGReg 7.3 → 1.46. 학습 자체는 정상적으로 수렴했다.
+
+**결과** (CEM 300×30, 50 episodes, eval seed 42, E3와 같은 시작점)
+
+| 모델 | 학습 data | 평가 N=0 | 평가 N=2 |
+|---|---|---|---|
+| CF-JEPA (E3) | N=2 augment | 0.94 | **0.88** (논문 0.95) |
+| LeWM (E5) | N=2 augment | 0.34 | **0.30** (논문 0.33) |
+| LeWM (공개 checkpoint, E0) | 깨끗한 data | 0.86 | 0.84 |
+
+- **논문의 LeWM 붕괴(0.33)를 직접 재현했다(0.30).** 같은 조건에서 CF-JEPA는 0.88이라, 논문의 핵심 비교(0.33 대 0.95)가 우리 실험에서도 나온다.
+- Distractor로 학습한 LeWM은 사각형이 없는 화면(N=0)에서도 0.34다. 즉 평가 화면의 사각형 때문이 아니라, 학습 중 latent가 사각형 움직임을 담게 되어 planning cost가 망가진 것으로 해석한다. 학습 loss는 정상적으로 낮아졌으므로, 예측을 못 하는 것이 아니라 planning에 쓸모없는 사각형까지 latent에 담는 것이 문제로 보인다.
+- 이 해석은 수치에서 나온 추정이다. latent를 직접 분석하지는 않았다.
+
+**결과물**
+- Checkpoint: Proton Drive `results/E5_lewm_tworoom_n2/weights_epoch_10.pt`, `config.json`. 다른 epoch는 설규원 로컬 `checkpoints/lewm_tworoom_n2/`에 있다.
+- 평가 결과와 영상: Proton Drive `results/E5_lewm_tworoom_n2/eval/`, 로컬 `outputs/lewm_n2/eval/`.
+
+**남은 문제**
+- Seed 1개다(E3와 같음).
