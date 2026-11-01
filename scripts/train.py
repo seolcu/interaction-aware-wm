@@ -91,16 +91,47 @@ def world_model_forward(self, batch, stage, cfg):
     # ρ warmup (11/1 E5 첫 학습에서 gate가 1 epoch 만에 0으로 collapse해서 추가):
     # h_int가 쓸모를 배우기 전에 sparsity가 gate를 닫지 않도록, ρ를 0에서 시작해
     # gate_sparsity_warmup_steps 동안 선형으로 키운다.
+    # gate_objective가 gain / supervised이면 (11/1 E6, E5의 포화 때문에 추가) ρ 대신
+    # 1) h_int 보조 loss: α와 무관하게 "α=1 예측"의 z^c 오차를 줄인다. gate가 닫혀도 h_int가 배운다.
+    # 2) gate BCE: gain은 "h_int를 켜서 z^c 오차가 τ 이상 줄었는가", supervised는 contact 라벨이 목표다.
     alpha = getattr(self.model.predictor, 'last_alpha', None)
     if alpha is not None:
+        pr = self.model.predictor
+        objective = getattr(pr, 'gate_objective', 'sparsity')
         alpha = alpha.float()
         output['gate_sparsity_loss'] = alpha.mean()
         warmup = cfg.model.get('gate_sparsity_warmup_steps', 0)
         ramp = min(1.0, getattr(self, 'global_step', 0) / warmup) if warmup > 0 else 1.0
-        rho = cfg.model.get('gate_sparsity_weight', 0.0) * ramp
+        rho = cfg.model.get('gate_sparsity_weight', 0.0) * ramp if objective == 'sparsity' else 0.0
         loss = loss + rho * output['gate_sparsity_loss']
+        extra = {}
+        if objective != 'sparsity' and pr.last_logit is not None:
+            d_c = pr.dim_c
+            base = pr.last_pred_c_base.float()
+            delta = pr.last_delta.float()
+            tgt_c = tgt_emb[..., :d_c].float().detach()
+            output['int_aux_loss'] = (base.detach() + delta - tgt_c).pow(2).mean()
+            loss = loss + cfg.model.get('int_aux_weight', 1.0) * output['int_aux_loss']
+            with torch.no_grad():
+                err_off = (base - tgt_c).pow(2).mean(-1)  # (B, T)
+                err_on = (base + delta - tgt_c).pow(2).mean(-1)
+                gain = err_off - err_on
+                if objective == 'gain':
+                    tau = cfg.model.get('gate_gain_threshold', 0.3)
+                    y = (gain > tau * err_off + 1e-6).float()
+                else:  # supervised: contact_next는 z-score 정규화되어 들어오므로 0보다 크면 1이다
+                    y = (batch['contact_next'][:, :ctx_len].reshape(gain.shape) > 0).float()
+            logit = pr.last_logit.float().squeeze(-1)
+            output['gate_bce_loss'] = torch.nn.functional.binary_cross_entropy_with_logits(logit, y)
+            loss = loss + cfg.model.get('gate_bce_weight', 1.0) * output['gate_bce_loss']
+            extra = {
+                f'{stage}/gate_target_ratio': y.mean(),
+                f'{stage}/gate_acc': ((logit > 0).float() == y).float().mean(),
+                f'{stage}/int_rel_gain': (gain / err_off.clamp(min=1e-8)).mean(),
+            }
         self.log_dict(
             {
+                **extra,
                 f'{stage}/gate_rho': torch.tensor(rho),
                 f'{stage}/gate_alpha_mean': alpha.mean().detach(),
                 f'{stage}/gate_alpha_max': alpha.max().detach(),

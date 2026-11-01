@@ -10,6 +10,8 @@
 6. Hydra로 model/cfjepa_gate.yaml을 만들고 scripts/train.py의 world_model_forward를 돌리면
    gate_sparsity_loss가 나오고 loss가 유한하며, gate와 h_int까지 gradient가 간다.
 7. get_cost가 (B, S) cost를 돌려준다(CEM planning 경로).
+8. (E6) gate_objective=gain / supervised: int_aux_loss와 gate_bce_loss가 유한하고,
+   gate는 BCE로만 학습된다(fwd loss -> gate gradient 없음, gate BCE -> encoder gradient 없음).
 
 사용: python scripts/colab/smoke_gate.py
 """
@@ -99,9 +101,9 @@ def test_stopgrad():
               (g_u == 0) if stop else (g_u > 0))
 
 
-def build_model():
+def build_model(extra_overrides=()):
     with initialize_config_dir(config_dir=str(ROOT / 'configs/train'), version_base=None):
-        cfg = compose(config_name='cfjepa', overrides=['model=cfjepa_gate', 'data=collision_tworoom'])
+        cfg = compose(config_name='cfjepa', overrides=['model=cfjepa_gate', 'data=collision_tworoom', *extra_overrides])
     with open_dict(cfg):
         cfg.model_kind = 'cfjepa'
         action_dim = cfg.data.dataset.frameskip * 2
@@ -161,6 +163,57 @@ def test_get_cost(cfg, model):
     check('get_cost: 유한', bool(torch.isfinite(cost).all()))
 
 
+def test_objectives():
+    from stable_worldmodel.wm.loss import SIGReg
+    from train import world_model_forward
+
+    for obj, data in (('gain', 'collision_tworoom'), ('supervised', 'collision_tworoom_contact')):
+        cfg, model = build_model([f'model.predictor.gate_objective={obj}', f'data={data}'])
+        check(f'{obj}: data keys_to_load에 contact_next = {obj == "supervised"}',
+              ('contact_next' in cfg.data.dataset.keys_to_load) == (obj == 'supervised'))
+        pr = model.predictor
+        perturb_int_out(pr)
+        model.train()
+        logged = {}
+        fake = SimpleNamespace(model=model, sigreg=SIGReg(**cfg.loss.sigreg_kwargs),
+                               log_dict=lambda d, **_: logged.update(d), global_step=0)
+        n = cfg.data.dataset.num_steps
+        batch = {
+            'pixels': torch.randn(2, n, 3, cfg.img_size, cfg.img_size),
+            'action': torch.randn(2, n, cfg.model.action_dim),
+        }
+        if obj == 'supervised':  # z-score 정규화된 binary: 양수 = contact
+            batch['contact_next'] = torch.tensor([[1.5, -0.4, -0.4, 1.5], [-0.4, 1.5, -0.4, -0.4]])[..., None]
+        out = world_model_forward(fake, batch, 'fit', cfg)
+        for k in ('int_aux_loss', 'gate_bce_loss', 'loss'):
+            check(f'{obj}: {k} 유한', k in out and torch.isfinite(out[k]).item())
+        check(f'{obj}: ρ는 쓰지 않는다', logged['fit/gate_rho'].item() == 0.0)
+        for k in ('fit/gate_target_ratio', 'fit/gate_acc', 'fit/int_rel_gain'):
+            check(f'{obj}: {k} 로깅', k in logged)
+        if obj == 'supervised':
+            check('supervised: 목표 비율 = 라벨 양수 비율 (앞 3 position)',
+                  abs(logged['fit/gate_target_ratio'].item() - 2 / 6) < 1e-6)
+
+        model.zero_grad()
+        out['fwd_loss'].backward(retain_graph=True)
+        g = sum(p.grad.abs().sum().item() for p in pr.gate.parameters() if p.grad is not None)
+        check(f'{obj}: fwd loss -> gate gradient 없음', g == 0)
+        h = sum(p.grad.abs().sum().item() for p in pr.int_out.parameters() if p.grad is not None)
+        check(f'{obj}: fwd loss -> h_int gradient 있음', h > 0)
+        model.zero_grad()
+        out['gate_bce_loss'].backward(retain_graph=True)
+        g = sum(p.grad.abs().sum().item() for p in pr.gate.parameters() if p.grad is not None)
+        e = sum(p.grad.abs().sum().item() for p in model.encoder.parameters() if p.grad is not None)
+        check(f'{obj}: gate BCE -> gate gradient 있음', g > 0)
+        check(f'{obj}: gate BCE -> encoder gradient 없음', e == 0)
+        model.zero_grad()
+        out['int_aux_loss'].backward()
+        h = sum(p.grad.abs().sum().item() for p in pr.int_out.parameters() if p.grad is not None)
+        gg = sum(p.grad.abs().sum().item() for p in pr.g.parameters() if p.grad is not None)
+        check(f'{obj}: h_int 보조 loss -> h_int gradient 있음', h > 0)
+        check(f'{obj}: h_int 보조 loss -> g gradient 없음', gg == 0)
+
+
 if __name__ == '__main__':
     test_equivalence()
     test_paths_and_alpha()
@@ -168,4 +221,5 @@ if __name__ == '__main__':
     cfg, model = build_model()
     test_train_forward(cfg, model)
     test_get_cost(cfg, model)
+    test_objectives()
     print('ALL PASS')

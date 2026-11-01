@@ -173,6 +173,15 @@ class CFJEPA(LeWM):
 # - 게이트 입력에 Δz^u_t = z^u_t - z^u_{t-1}을 더한다. 한 frame의 z^u로는 obstacle이
 #   다가오는지 멀어지는지 알 수 없다(첫 frame은 Δ = 0).
 # - h_int의 마지막 층을 0으로 초기화한다. 학습 시작 시 출력이 CF-JEPA와 정확히 같다.
+#
+# gate_objective (E6에서 추가. E5에서 sparsity 방식의 gate가 0이나 1에 포화했다):
+# - 'sparsity':   L = L_CF-JEPA + ρ·E[α]. E5 방식.
+# - 'gain':       gate를 BCE로 학습한다. 목표는 "h_int를 켰을 때 z^c 예측 오차가 τ 이상 줄었는가"다.
+#                 contact 라벨을 쓰지 않는다.
+# - 'supervised': gate를 BCE로 학습한다. 목표는 contact 라벨(다음 frameskip step 안의 contact)이다.
+# gain과 supervised에서는 gate를 BCE로만 학습한다(gate 입력과, 예측에 쓰는 α를 detach한다).
+# h_int는 α와 무관한 보조 loss(α=1 예측의 오차)로도 학습해, gate가 닫혀도 h_int가 계속 배운다.
+# loss는 scripts/train.py의 [interaction gate] 블록에서 더한다.
 # =====================================================================================
 
 
@@ -187,6 +196,12 @@ class InteractionGatedPredictor(FactorizedPredictor):
     - 'always':  α = 1. ablation (gate 없이 항상 반영).
     - 'off':     α = 0. h_int를 쓰지 않는다. 출력이 CF-JEPA와 같다.
     zu_stopgrad: h_int와 gate로 들어가는 z^u를 detach한다. ablation (z^u stop-gradient).
+    gate_objective: 'sparsity' | 'gain' | 'supervised' (위 주석 참고).
+
+    forward 뒤 train.py가 쓰는 값:
+    - last_alpha (B, T, 1), last_logit (B, T, 1): gate 출력과 logit
+    - last_pred_c_base (B, T, d_c): h_int를 더하기 전 z^c 예측 (= CF-JEPA 예측)
+    - last_delta (B, T, d_c): α를 곱하기 전 h_int 출력
     """
 
     def __init__(
@@ -204,11 +219,16 @@ class InteractionGatedPredictor(FactorizedPredictor):
         # gate MLP
         gate_hidden_dim: int = 256,
         gate_init_bias: float = 0.0,
+        gate_objective: str = 'sparsity',
         **kwargs,
     ):
         super().__init__(**kwargs)
         assert gate_mode in ('learned', 'always', 'off')
+        assert gate_objective in ('sparsity', 'gain', 'supervised')
         self.gate_mode = gate_mode
+        self.gate_objective = gate_objective
+        # gain, supervised: gate는 BCE로만 학습한다.
+        self.gate_isolated = gate_objective != 'sparsity'
         self.zu_stopgrad = zu_stopgrad
         self.int_scale = int_scale
         d_c, d_u = self.dim_c, self.dim_u
@@ -236,6 +256,9 @@ class InteractionGatedPredictor(FactorizedPredictor):
         nn.init.constant_(self.gate[-1].bias, gate_init_bias)
 
         self.last_alpha: torch.Tensor | None = None
+        self.last_logit: torch.Tensor | None = None
+        self.last_pred_c_base: torch.Tensor | None = None
+        self.last_delta: torch.Tensor | None = None
 
     def interaction(self, z_c, z_u, act_emb):
         """α · h_int. 반환: (B, T, d_c), α (B, T, 1)."""
@@ -243,21 +266,30 @@ class InteractionGatedPredictor(FactorizedPredictor):
             z_u = z_u.detach()
         if self.gate_mode == 'learned':
             dz_u = torch.cat([torch.zeros_like(z_u[:, :1]), z_u[:, 1:] - z_u[:, :-1]], dim=1)
-            logit = self.gate(torch.cat([z_c, z_u, dz_u, act_emb], dim=-1))
+            gate_in = torch.cat([z_c, z_u, dz_u, act_emb], dim=-1)
+            if self.gate_isolated:
+                gate_in = gate_in.detach()
+            logit = self.gate(gate_in)
             alpha = torch.sigmoid(logit.float()).to(z_c.dtype)
+            self.last_logit = logit
         else:
             alpha = z_c.new_ones(*z_c.shape[:2], 1)
+            self.last_logit = None
         x = self.int_in(torch.cat([z_c, z_u], dim=-1))
         delta = self.int_scale * torch.tanh(self.int_out(self.h_int(x, act_emb)))
-        return alpha * delta, alpha
+        self.last_delta = delta
+        alpha_used = alpha.detach() if self.gate_isolated else alpha
+        return alpha_used * delta, alpha
 
     def forward(self, emb: torch.Tensor, act_emb: torch.Tensor) -> torch.Tensor:
         z_c, z_u = emb.split([self.dim_c, self.dim_u], dim=-1)
         T = emb.size(1)
         pred_c = self._proj(self.proj_c, self.g(z_c, act_emb))
         pred_u = self._proj(self.proj_u, self.h(z_u + self.h_pos_embedding[:, :T]))
+        self.last_pred_c_base = pred_c
         if self.gate_mode == 'off':
             self.last_alpha = z_c.new_zeros(*z_c.shape[:2], 1)
+            self.last_logit = self.last_delta = None
         else:
             corr, self.last_alpha = self.interaction(z_c, z_u, act_emb)
             pred_c = pred_c + corr
