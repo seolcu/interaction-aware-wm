@@ -187,6 +187,7 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 
 **남은 문제**
 - 논문 조건의 LeWM baseline은 E5에서 학습했다(N=2 평가 0.30).
+- Planning cost를 LeWM 방식(마지막 step)으로 바꾸면 같은 checkpoint가 N=2에서 1.00이다(E6).
 - Seed 1개다. 최종 발표 전 3 seed로 늘린다(11/1 결정).
 
 ## 2026-11-01 · E4. Collision TwoRoom 학습 data
@@ -265,3 +266,37 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 
 **남은 문제**
 - Seed 1개다(E3와 같음).
+
+## 2026-11-01 · E6. CF-JEPA 평가 설정 튜닝 (재학습 없음)
+
+**목적:** E3의 N=2 0.88을 논문 값 0.95에 가깝게 올린다. 재학습(1회 5시간) 전에, 학습 없이 바꿀 수 있는 평가 설정부터 확인한다.
+
+**방법**
+- 보고용 시작점(eval seed 42, 50개)으로 튜닝하면 그 50개에 맞춘 결과가 된다. 그래서 튜닝은 seed 1~4(각 50, 합 200)로 하고, 고른 설정만 seed 42로 한 번 평가했다.
+- 비교한 것: checkpoint epoch(6, 8, 10), planning cost 두 가지.
+  - `sum_l2`: 논문 Eq. 7. 매 예측 step의 ||z^c_k − z^c_goal||를 더한다(E3 기본값).
+  - `last_mse`: LeWM 기본 criterion. 마지막 step의 squared error만 쓴다. E5의 LeWM도 이 cost로 평가했다.
+- 명령: `python scripts/colab/tune_eval.py cfjepa_tworoom_n2 e10_sum=10:sum_l2 e10_last=10:last_mse e8_sum=8:sum_l2 e6_sum=6:sum_l2`
+- 평가 때 cost만 바꾸는 옵션: `scripts/eval.py ... +cost=last_mse`
+
+**튜닝 결과** (N=2, seed 1~4, 200 episodes)
+
+| 설정 | 평균 | seed별 |
+|---|---|---|
+| epoch 10, sum_l2 (E3) | 0.89 | 0.96 / 0.82 / 0.92 / 0.86 |
+| epoch 10, last_mse | **0.99** | 0.98 / 1.00 / 1.00 / 0.98 |
+| epoch 8, sum_l2 | 0.88 | 0.92 / 0.82 / 0.92 / 0.86 |
+| epoch 6, sum_l2 | 0.86 | 0.90 / 0.78 / 0.92 / 0.84 |
+
+**보고용 시작점 결과** (seed 42, epoch 10, last_mse): N=2 **1.00**, N=0 **1.00**
+
+**해석**
+- 차이는 학습이 아니라 planning cost에서 나왔다. 같은 checkpoint가 cost만 바꿔 0.89 → 0.99가 된다. Epoch은 결과에 거의 영향이 없다.
+- `sum_l2`는 중간 step도 goal에 가까워야 cost가 낮다. TwoRoom은 벽을 돌아 문으로 가야 해서 중간에 goal에서 멀어지는 경로가 정답일 때가 있는데, 이 cost는 그런 경로를 불리하게 본다고 추정한다(확인하지 않음).
+- 논문 Eq. 7은 분명히 합이다. 그래서 "논문 그대로 구현하면 0.88~0.89, LeWM 기본 cost를 쓰면 0.99~1.00"으로 둘 다 기록한다. 논문 저자의 실제 코드가 어느 쪽인지는 알 수 없다(코드 미공개).
+- E5의 LeWM(0.30)도 `last_mse`로 평가했으므로, **같은 cost로 비교하면 CF-JEPA 1.00 대 LeWM 0.30**이다.
+- 1.00은 50 episode 기준이다. 튜닝 seed에서도 0.98~1.00이라 우연은 아니지만, 성공률 1.0 근처에서는 더 이상 차이를 볼 수 없다(천장 효과).
+
+**결정 제안 (팀 확인 필요):** 이후 gate 실험의 CEM 평가는 `+cost=last_mse`로 통일한다. 코드 기본값은 논문대로 `sum_l2`로 둔다.
+
+**결과물:** 평가 txt와 영상은 Proton Drive `results/E6_cfjepa_tuning/`, 로컬 `outputs/cfjepa/tune/`에 있다.
