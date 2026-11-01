@@ -1,0 +1,12 @@
+# le-wm/config/train/data/tworoom.yaml과 같다.
+dataset:
+  num_steps: 4      # history_size + num_preds
+  frameskip: 5
+  name: tworoom.h5
+  keys_to_load:
+    - pixels
+    - action
+    - proprio
+  keys_to_cache:
+    - action
+    - proprio

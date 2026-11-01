@@ -10,9 +10,9 @@ venv/
 .ipynb_checkpoints/
 
 # Data / outputs
-data/
-checkpoints/
-outputs/
+/data/
+/checkpoints/
+/outputs/
 wandb/
 *.pt
 *.pth
