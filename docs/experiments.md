@@ -300,3 +300,30 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 **결정 제안 (팀 확인 필요):** 이후 gate 실험의 CEM 평가는 `+cost=last_mse`로 통일한다. 코드 기본값은 논문대로 `sum_l2`로 둔다.
 
 **결과물:** 평가 txt와 영상은 Proton Drive `results/E6_cfjepa_tuning/`, 로컬 `outputs/cfjepa/tune/`에 있다.
+
+## 2026-11-01 · E7. PushT: Distractor env에서 CF-JEPA와 LeWM (N=2)
+
+**목적:** 교수님 요청("기존 benchmark 수치를 여러 개")에 맞춰 TwoRoom 외의 기존 task를 하나 더 재현한다. PushT는 CF-JEPA 논문에서 차이가 가장 큰 task다(Table III, N=2: LeWM 0.01, CF-JEPA 0.87).
+
+**설정** (E3, E5와 같고 data만 다르다)
+- Data: HF `quentinll/lewm-pusht`의 `pusht_expert_train.h5`(압축 13GB, 풀면 46GB). `TASK=pusht bash scripts/colab/setup_lewm.sh`로 받는다.
+- Env: `envs/distractor_pusht.py`(`iawm/PushTDistractor-v1`). TwoRoom과 같은 사각형을 `DistractorMixin`(`envs/distractor_mixin.py`)으로 붙인다.
+- 학습: inv_weight 3(논문 PushT 값, TwoRoom과 같음), 10 epochs, batch 128, seed 3072, Colab A100 2대에서 동시에 학습한다.
+  - `bash scripts/colab/train_cfjepa.sh data=pusht model=cfjepa output_model_name=cfjepa_pusht_n2`
+  - `bash scripts/colab/train_cfjepa.sh data=pusht model=lewm output_model_name=lewm_pusht_n2`
+- 평가: `bash scripts/colab/eval_cfjepa.sh <ckpt> <N> --config-name=pusht` (CEM 300×30, 50 episodes, eval seed 42).
+
+**확인** (`scripts/colab/smoke_pusht.py`, 통과)
+- N=0이면 원래 `swm/PushT-v1`과 frame이 같다.
+- N=2이면 화면의 약 4.6%가 바뀌고, goal image는 원래 PushT와 같다(깨끗하다).
+- 그림: `outputs/pusht_distractor_sheet.png`(연속 20 step).
+- 한계: 사각형이 가장자리에 붙어 있어서, agent(파란 점)가 가장자리 근처에 가면 가려질 수 있다. 논문은 "task를 가리지 않게" 배치했다고만 적었다.
+
+**공개 LeWM checkpoint (깨끗한 data로 학습)로 pipeline 확인**
+- N=0: **0.94** (논문 0.96), N=2: 0.92. 평가 pipeline이 PushT에서도 정상이다. TwoRoom(E3)과 마찬가지로 깨끗하게 학습한 LeWM은 사각형에 거의 영향을 받지 않는다.
+
+**학습 진행** (11/1 21:00 시작)
+- 1 epoch는 13,933 step이고, 속도는 약 2.1 it/s다(TwoRoom 3.3 it/s). GPU 사용률이 13~85%로 오르내린다. 46GB data를 읽는 data loader가 병목이다.
+- 이 속도면 10 epoch에 약 18시간이 걸린다. 끝나는 시각은 11/2 오후 3시 무렵으로 예상한다.
+
+**결과:** (학습이 끝나면 채운다)
