@@ -3,6 +3,8 @@
 학습된 checkpoint를 불러 data의 마지막 N episode로 다음을 계산한다.
 - α의 contact 구분 AUROC (RQ2). gate가 없는 모델(CF-JEPA)은 건너뛴다.
 - contact / non-contact transition별 z^c 예측 오차 (README의 prediction error 지표).
+- (E6) gate 모델이면 h_int를 끈 예측(err_c_off, CF-JEPA 부분)과 켠 예측(err_c_on, α=1)의 오차,
+  상대 이득 (off - on) / off를 contact별로 비교한다. gain gate의 τ를 정하는 근거다.
 
 Transition과 contact 라벨 맞추기:
 - World.collect는 row j에 "step j-1 이후의 frame"과 그 step의 info(contact)를 저장하고,
@@ -87,7 +89,8 @@ def run(model, f, episodes, device, batch=128, distractors=0, frameskip=5, histo
     act_mean, act_std = action_stats(f)
     dim_c = getattr(model, 'dim_c', None)
     has_gate = hasattr(model.predictor, 'last_alpha')
-    rows = {'ep': [], 'pos': [], 'contact': [], 'err_c': [], 'err_all': [], 'alpha': []}
+    rows = {'ep': [], 'pos': [], 'contact': [], 'err_c': [], 'err_all': [], 'alpha': [],
+            'err_c_off': [], 'err_c_on': []}
     buf_px, buf_act, buf_lab, buf_ep = [], [], [], []
 
     def flush():
@@ -114,6 +117,14 @@ def run(model, f, episodes, device, batch=128, distractors=0, frameskip=5, histo
             err_all = diff.mean(-1)
             err_c = diff[..., :dim_c].mean(-1) if dim_c else err_all
             alpha = model.predictor.last_alpha.float().squeeze(-1) if has_gate else torch.full_like(err_all, float('nan'))
+            base = getattr(model.predictor, 'last_pred_c_base', None)
+            delta = getattr(model.predictor, 'last_delta', None)
+            if has_gate and base is not None and delta is not None:
+                tgt_c = tgt[..., :dim_c].float()
+                err_off = (base.float() - tgt_c).pow(2).mean(-1)
+                err_on = (base.float() + delta.float() - tgt_c).pow(2).mean(-1)
+            else:
+                err_off = err_on = torch.full_like(err_all, float('nan'))
             n, T = err_all.shape
             rows['ep'].append(np.repeat(eps[i:i + batch], T))
             rows['pos'].append(np.tile(np.arange(T), n))
@@ -121,6 +132,8 @@ def run(model, f, episodes, device, batch=128, distractors=0, frameskip=5, histo
             rows['err_c'].append(err_c.cpu().numpy().reshape(-1))
             rows['err_all'].append(err_all.cpu().numpy().reshape(-1))
             rows['alpha'].append(alpha.cpu().numpy().reshape(-1))
+            rows['err_c_off'].append(err_off.cpu().numpy().reshape(-1))
+            rows['err_c_on'].append(err_on.cpu().numpy().reshape(-1))
 
     n_buf = 0
     for px, act, lab, ep in iter_clips(f, episodes, history + 1, frameskip, frameskip, act_mean, act_std):
@@ -153,6 +166,20 @@ def report(r, has_gate):
                 m = r['pos'] == p
                 if c[m].any() and (~c[m]).any():
                     print(f'  position {p}: AUROC = {roc_auc_score(c[m], a[m]):.4f}')
+    off, on = r['err_c_off'], r['err_c_on']
+    if has_gate and np.isfinite(off).all() and np.isfinite(on).all():
+        g = (off - on) / np.maximum(off, 1e-8)
+        print('--- h_int 이득 (α=1로 켰을 때 z^c 오차가 얼마나 줄었나) ---')
+        for name, m in (('non-contact', ~c), ('contact', c)):
+            q = np.quantile(g[m], [0.1, 0.5, 0.9, 0.99])
+            print(f'{name:12s} err_off={off[m].mean():.5f} err_on={on[m].mean():.5f} '
+                  f'rel_gain mean={g[m].mean():.4f} q10/50/90/99=' + '/'.join(f'{v:.3f}' for v in q))
+        if c.any() and (~c).any():
+            print(f'AUROC(rel_gain -> contact) = {roc_auc_score(c, g):.4f}   '
+                  f'AUROC(abs_gain -> contact) = {roc_auc_score(c, off - on):.4f}')
+        for tau in (0.02, 0.05, 0.1, 0.2, 0.3):
+            print(f'  τ={tau:<4}: 목표=1 비율  all={(g > tau).mean():.4f}  non-contact={(g[~c] > tau).mean():.4f}  '
+                  f'contact={(g[c] > tau).mean():.4f}')
 
 
 def main():
