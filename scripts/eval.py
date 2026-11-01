@@ -18,6 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'src'), str(ROOT)]
 import envs.collision_tworoom  # noqa: E402,F401  (gym 등록)
+import envs.distractor_pusht  # noqa: E402,F401  (gym 등록)
 import envs.distractor_tworoom  # noqa: E402,F401  (gym 등록)
 
 os.environ["MUJOCO_GL"] = "egl"

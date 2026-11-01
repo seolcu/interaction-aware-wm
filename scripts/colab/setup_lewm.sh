@@ -2,6 +2,7 @@
 # Colab VM에서 LeWM TwoRoom baseline 환경을 준비한다.
 # 사용: STABLEWM_HOME=/content/stable-wm bash setup_lewm.sh
 # 이후 python 실행은 /content/venv/bin/python 을 쓴다.
+# TASK=pusht 이면 TwoRoom 대신 PushT data와 공개 LeWM PushT checkpoint를 받는다.
 # SKIP_DATA=1 이면 data와 checkpoint 단계(3, 4)를 건너뛴다. env만 필요할 때 쓴다.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -28,16 +29,26 @@ python -c "import stable_worldmodel as swm, stable_pretraining; print('swm', swm
 
 if [ "${SKIP_DATA:-0}" = "1" ]; then echo "SKIP_DATA=1: 3, 4단계 생략"; echo "SETUP DONE"; exit 0; fi
 
-echo "[3/4] HF data download (checkpoint는 4단계에서 받는다)"
-hf download quentinll/lewm-tworooms --repo-type dataset --local-dir "$STABLEWM_HOME/hf_tworooms_data"
-command -v zstd >/dev/null || { apt-get -qq update && apt-get -qq install -y zstd >/dev/null; }
+echo "[3/4] HF data download (checkpoint는 4단계에서 받는다), TASK=${TASK:-tworoom}"
+command -v zstd >/dev/null || { apt-get -qq update || true; apt-get -qq install -y zstd >/dev/null; }
 # stable-worldmodel 0.1.x는 dataset을 $STABLEWM_HOME/datasets/<name>.h5 에서 찾는다.
 mkdir -p "$STABLEWM_HOME/datasets"
-if ! ls "$STABLEWM_HOME"/datasets/*.h5 >/dev/null 2>&1; then
-  tar --zstd -xf "$STABLEWM_HOME"/hf_tworooms_data/*.tar.zst -C "$STABLEWM_HOME/datasets"
+if [ "${TASK:-tworoom}" = "pusht" ]; then
+  # PushT data는 tar가 아니라 h5 하나를 zstd로 압축한 파일이다(13GB).
+  hf download quentinll/lewm-pusht --repo-type dataset --local-dir "$STABLEWM_HOME/hf_pusht_data"
+  [ -f "$STABLEWM_HOME/datasets/pusht_expert_train.h5" ] || \
+    zstd -d -q "$STABLEWM_HOME/hf_pusht_data/pusht_expert_train.h5.zst" -o "$STABLEWM_HOME/datasets/pusht_expert_train.h5"
+  rm -f "$STABLEWM_HOME/hf_pusht_data/pusht_expert_train.h5.zst"  # 디스크 절약
+  HF_MODEL=quentinll/lewm-pusht; CKPT_NAME=lewm-pusht
+else
+  hf download quentinll/lewm-tworooms --repo-type dataset --local-dir "$STABLEWM_HOME/hf_tworooms_data"
+  if ! ls "$STABLEWM_HOME"/datasets/tworoom*.h5 >/dev/null 2>&1; then
+    tar --zstd -xf "$STABLEWM_HOME"/hf_tworooms_data/*.tar.zst -C "$STABLEWM_HOME/datasets"
+  fi
+  HF_MODEL=quentinll/lewm-tworooms; CKPT_NAME=lewm-tworooms
 fi
-ls -la "$STABLEWM_HOME/datasets"
+ls -la "$STABLEWM_HOME/datasets"; df -h "$STABLEWM_HOME" | tail -1
 
 echo "[4/4] checkpoint key를 transformers v5 형식으로 변환"
-python "$SCRIPT_DIR/fix_lewm_keys.py" quentinll/lewm-tworooms lewm-tworooms
+python "$SCRIPT_DIR/fix_lewm_keys.py" "$HF_MODEL" "$CKPT_NAME"
 echo "SETUP DONE"
