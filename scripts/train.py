@@ -84,6 +84,25 @@ def world_model_forward(self, batch, stage, cfg):
         output['adv_loss'] = masked_mse(self.model.adversary(z_u[:, :-1], z_u[:, 1:]), act, mask)
         loss = loss + cfg.loss.inv_weight * output['inv_loss'] + cfg.loss.adv_weight * output['adv_loss']
 
+    # ---- [interaction gate] 강연우 추가 (11/1) ----------------------------------------
+    # predictor가 InteractionGatedPredictor(src/iawm/cfjepa_gate.py)이면 sparsity ρ·E[α]를
+    # loss에 더하고 α 통계를 로깅한다. ρ는 model config의 gate_sparsity_weight다.
+    # last_alpha가 없는 모델(CF-JEPA, LeWM)은 이 블록을 건너뛰므로 기존 학습과 같다.
+    alpha = getattr(self.model.predictor, 'last_alpha', None)
+    if alpha is not None:
+        alpha = alpha.float()
+        output['gate_sparsity_loss'] = alpha.mean()
+        loss = loss + cfg.model.get('gate_sparsity_weight', 0.0) * output['gate_sparsity_loss']
+        self.log_dict(
+            {
+                f'{stage}/gate_alpha_mean': alpha.mean().detach(),
+                f'{stage}/gate_alpha_max': alpha.max().detach(),
+                f'{stage}/gate_open_ratio': (alpha > 0.5).float().mean().detach(),
+            },
+            on_step=True, sync_dist=True,
+        )
+    # ---- [interaction gate] 추가 끝 ---------------------------------------------------
+
     output['loss'] = loss
     self.log_dict(
         {f'{stage}/{k}': v.detach() for k, v in output.items() if 'loss' in k},

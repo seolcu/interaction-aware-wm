@@ -1,0 +1,13 @@
+# Collision TwoRoom (scripts/collect_collision.py, E4). data/tworoom.yaml과 같고 파일 이름만 다르다.
+# contact, obstacle_* column은 학습에 쓰지 않으므로 keys_to_load에 넣지 않는다.
+dataset:
+  num_steps: 4      # history_size + num_preds
+  frameskip: 5
+  name: collision_tworoom.h5
+  keys_to_load:
+    - pixels
+    - action
+    - proprio
+  keys_to_cache:
+    - action
+    - proprio

@@ -1,0 +1,58 @@
+# Interaction-gated CF-JEPA (src/iawm/cfjepa_gate.py). model/cfjepa.yaml을 복사하고
+# predictor를 InteractionGatedPredictor로 바꿨다. 나머지(encoder, projector, action encoder)는 같다.
+_target_: iawm.cfjepa_gate.CFJEPA
+gate_sparsity_weight: 1e-3   # ρ. scripts/train.py가 읽는다. CFJEPA는 **kwargs로 받고 무시한다
+action_dim: ???       # train.py가 frameskip × action dim으로 채운다
+head_hidden_dim: 512
+grl_scale: 1.0
+cost: sum_l2          # 논문 Eq. 7. LeWM 방식은 last_mse
+
+encoder:
+  _target_: stable_pretraining.backbone.utils.vit_hf
+  size: tiny
+  patch_size: 14
+  image_size: ${img_size}
+  pretrained: false
+  use_mask_token: false
+
+predictor:
+  _target_: iawm.cfjepa_gate.InteractionGatedPredictor
+  gate_mode: learned     # learned | always (ablation α=1) | off (CF-JEPA와 같음)
+  zu_stopgrad: false     # ablation: h_int와 gate에 들어가는 z^u를 detach
+  int_hidden_dim: 128
+  int_depth: 2
+  int_heads: 4
+  int_dim_head: 32
+  int_mlp_dim: 512
+  int_scale: 1.0         # h_int 출력 bound: int_scale · tanh(·)
+  gate_hidden_dim: 256
+  gate_init_bias: 0.0    # 시작 α = σ(0) = 0.5
+  num_frames: ${history_size}
+  dim_c: 128
+  dim_u: 64
+  g_hidden_dim: ${embed_dim}
+  g_depth: 6
+  g_heads: 16
+  g_dim_head: 64
+  g_mlp_dim: 2048
+  h_hidden_dim: 128
+  h_depth: 3
+  h_heads: 8
+  h_dim_head: 32
+  h_mlp_dim: 512
+  dropout: 0.1
+  proj_hidden_dim: 2048
+
+action_encoder:
+  _target_: stable_worldmodel.wm.lewm.module.Embedder
+  input_dim: ???
+  emb_dim: 128        # g의 입력 차원(dim_c)과 같아야 한다
+
+projector:
+  _target_: stable_worldmodel.wm.lewm.module.MLP
+  input_dim: ${embed_dim}
+  output_dim: ${embed_dim}
+  hidden_dim: 2048
+  norm_fn:
+    _target_: torch.nn.BatchNorm1d
+    _partial_: true
