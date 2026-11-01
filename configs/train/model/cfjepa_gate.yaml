@@ -1,7 +1,8 @@
 # Interaction-gated CF-JEPA (src/iawm/cfjepa_gate.py). model/cfjepa.yaml을 복사하고
 # predictor를 InteractionGatedPredictor로 바꿨다. 나머지(encoder, projector, action encoder)는 같다.
 _target_: iawm.cfjepa_gate.CFJEPA
-gate_sparsity_weight: 1e-3   # ρ. scripts/train.py가 읽는다. CFJEPA는 **kwargs로 받고 무시한다
+gate_sparsity_weight: 1e-4   # ρ. scripts/train.py가 읽는다. CFJEPA는 **kwargs로 받고 무시한다
+gate_sparsity_warmup_steps: 6600   # ρ를 0에서 선형으로 키우는 step 수 (Collision data 약 2 epoch)
 action_dim: ???       # train.py가 frameskip × action dim으로 채운다
 head_hidden_dim: 512
 grl_scale: 1.0
@@ -26,7 +27,7 @@ predictor:
   int_mlp_dim: 512
   int_scale: 1.0         # h_int 출력 bound: int_scale · tanh(·)
   gate_hidden_dim: 256
-  gate_init_bias: 0.0    # 시작 α = σ(0) = 0.5
+  gate_init_bias: 2.0    # 시작 α = σ(2) ≈ 0.88. 열린 상태로 시작해 h_int가 먼저 배우게 한다
   num_frames: ${history_size}
   dim_c: 128
   dim_u: 64

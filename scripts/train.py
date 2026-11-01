@@ -88,13 +88,20 @@ def world_model_forward(self, batch, stage, cfg):
     # predictor가 InteractionGatedPredictor(src/iawm/cfjepa_gate.py)이면 sparsity ρ·E[α]를
     # loss에 더하고 α 통계를 로깅한다. ρ는 model config의 gate_sparsity_weight다.
     # last_alpha가 없는 모델(CF-JEPA, LeWM)은 이 블록을 건너뛰므로 기존 학습과 같다.
+    # ρ warmup (11/1 E5 첫 학습에서 gate가 1 epoch 만에 0으로 collapse해서 추가):
+    # h_int가 쓸모를 배우기 전에 sparsity가 gate를 닫지 않도록, ρ를 0에서 시작해
+    # gate_sparsity_warmup_steps 동안 선형으로 키운다.
     alpha = getattr(self.model.predictor, 'last_alpha', None)
     if alpha is not None:
         alpha = alpha.float()
         output['gate_sparsity_loss'] = alpha.mean()
-        loss = loss + cfg.model.get('gate_sparsity_weight', 0.0) * output['gate_sparsity_loss']
+        warmup = cfg.model.get('gate_sparsity_warmup_steps', 0)
+        ramp = min(1.0, getattr(self, 'global_step', 0) / warmup) if warmup > 0 else 1.0
+        rho = cfg.model.get('gate_sparsity_weight', 0.0) * ramp
+        loss = loss + rho * output['gate_sparsity_loss']
         self.log_dict(
             {
+                f'{stage}/gate_rho': torch.tensor(rho),
                 f'{stage}/gate_alpha_mean': alpha.mean().detach(),
                 f'{stage}/gate_alpha_max': alpha.max().detach(),
                 f'{stage}/gate_open_ratio': (alpha > 0.5).float().mean().detach(),
