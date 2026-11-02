@@ -306,3 +306,83 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 - 분석 data(마지막 500 episode)는 학습 data에도 들어 있다(학습/검증 분할이 clip 단위다). 발표용 수치는 별도 평가 data로 다시 계산한다.
 
 **결과물:** checkpoint `gate_collision_n2/weights_epoch_{1..10}.pt`, `gate_diag/weights_epoch_1.pt`와 metrics(`/content/gate_collision_n2_metrics.csv`, `/content/gate_diag_metrics.csv`, `an_gate_main.csv`, `an_gate_diag.csv`)는 강연우의 Colab VM에만 있다. Proton Drive `results/E5_gate/`에 올려야 한다.
+
+## 2026-11-01~02 · E6. Gate 학습 신호 바꾸기(이득 기반, contact 지도)와 잔차 probe
+
+**목적:** E5에서 sparsity 방식의 gate가 0이나 1에 포화하고 contact를 구분하지 못했다(AUROC 0.47 / 0.54). Gate의 학습 신호를 바꿔 contact 때만 열리는지, 열렸을 때 예측이 좋아지는지 확인한다. 같은 data로 학습한 CF-JEPA baseline도 만든다.
+
+**구현** (`src/iawm/cfjepa_gate.py`, `scripts/train.py`의 `[interaction gate]` 블록)
+- `predictor.gate_objective`: `sparsity`(E5), `gain`, `supervised`.
+- `gain`과 `supervised`에서는 gate를 BCE로만 학습한다. Gate 입력과, 예측에 쓰는 α를 detach한다. 그래서 예측 loss가 gate를 움직이지 않고, gate BCE가 encoder를 움직이지 않는다.
+- h_int는 α와 무관한 보조 loss(`int_aux_loss`, α=1 예측의 z^c 오차)로도 학습한다. Gate가 닫혀도 h_int가 계속 배운다.
+- Gate 목표값:
+  - `gain`: h_int를 켰을 때 z^c 오차가 τ(`gate_gain_threshold`, 기본 0.3) 이상 줄었으면 1. Contact 라벨을 쓰지 않는다.
+  - `supervised`: transition(frame t → t+5) 동안 contact가 있었으면 1.
+- `supervised` 라벨: data loader는 action 외 column을 frameskip 간격으로 건너뛰어 읽는다. 그래서 `scripts/add_contact_labels.py`가 `contact_next[j] = any(contact[j+1 .. j+5])`를 미리 계산해 h5에 더한다(`analyze_gate.py`의 transition 라벨과 같은 정의, 가짜 data로 일치 확인). 원본은 학습 중인 다른 process가 읽고 있어서, 사본 `collision_tworoom_contact.h5`에 쓰고 `configs/train/data/collision_tworoom_contact.yaml`이 읽는다. train.py가 이 column도 z-score 정규화하므로 gate 블록은 0보다 큰 값을 1로 본다.
+- 새 로깅: `gate_target_ratio`, `gate_acc`, `int_rel_gain`, `int_aux_loss`, `gate_bce_loss`.
+- 검증: `smoke_gate.py`에 두 방식의 gradient 격리(fwd loss → gate 없음, gate BCE → encoder 없음, h_int 보조 loss → g 없음)를 추가했고 모두 통과했다. 가짜 h5로 `train.py`를 끝까지 돌려 `contact_next`가 정규화를 거쳐도 라벨로 해석되는 것을 확인했다.
+- `scripts/analyze_gate.py`: h_int를 끈 예측(`err_c_off`)과 켠 예측(`err_c_on`, α=1)의 오차, contact별 상대 이득, τ별 목표 비율을 출력한다.
+- `scripts/probe_residual.py`(새 파일): 아래 잔차 probe.
+
+**학습** (Colab A100 40GB 1장, seed 3072, 10 epoch, batch 128, Distractor N=2 augment, `data=collision_tworoom`)
+
+| 이름 | 모델 | 비고 |
+|---|---|---|
+| `cfjepa_collision_n2` | CF-JEPA (`model=cfjepa`, 기본값) | Gate 비교용 baseline. 완료 |
+| `gate_gain_n2` | `gate_objective=gain`, τ=0.3 | Epoch 6.5에서 중단(아래). `weights_epoch_6.pt` 사용 |
+| `gate_sup_n2` | `gate_objective=supervised`, `data=collision_tworoom_contact` | 완료 |
+
+- 명령: `bash scripts/colab/train_cfjepa.sh model=cfjepa_gate data=collision_tworoom model.predictor.gate_objective=gain output_model_name=gate_gain_n2` (supervised는 `data=collision_tworoom_contact`, `gate_objective=supervised`)
+- 세 학습이 한 GPU를 나눠 쓴 구간이 있어 epoch당 시간이 20분(단독)에서 35~40분으로 늘었다.
+
+**이득 기반 gate: 목표값이 한 번도 1이 되지 않았다**
+- Validation `gate_target_ratio`가 epoch 1~6 내내 0.0이었다. h_int가 z^c 오차를 30% 이상 줄인 샘플이 없었다는 뜻이다. Gate는 항상 닫혔고(`gate_open_ratio` 0), `gate_acc` 1.0은 전부 0인 목표를 맞힌 것이라 의미가 없다. 그래서 epoch 6.5에서 중단했다.
+- `analyze_gate.py` (`gate_gain_n2/weights_epoch_6.pt`, 마지막 500 episode):
+
+| | err_off (h_int 끔) | err_on (α=1) | 상대 이득 평균 |
+|---|---|---|---|
+| non-contact | 0.00984 | 0.00977 | 0.94% |
+| contact | 0.04376 | 0.04357 | 0.44% |
+
+  - h_int는 contact 구간 오차를 0.44%만 줄였다. 오히려 non-contact에서 더 도왔다. 상대 이득으로 contact를 구분하는 AUROC는 0.348, 절대 이득은 0.605다.
+  - τ를 낮춰도 구분되지 않는다. τ=0.02에서 목표=1 비율은 non-contact 13.1%, contact 6.0%이고, τ≥0.05에서는 거의 0이다.
+
+**Contact 지도 gate: 스위치는 되지만 예측은 그대로다** (`gate_sup_n2/weights_epoch_10.pt`, 마지막 500 episode)
+
+| | non-contact | contact |
+|---|---|---|
+| α 평균 | 0.094 | 0.514 |
+| 열린 비율 (α > 0.5) | 2.2% | 50.8% |
+| 실제 z^c 예측 오차 | 0.00545 | 0.03477 |
+| h_int 끔 / 켬 (α=1) | 0.00545 / 0.00540 | 0.03493 / 0.03464 |
+
+- **AUROC(α → contact) = 0.899.** Contact 때 열리고 평소에는 닫힌다. 다만 라벨로 학습했으므로 RQ2의 답이 아니라 "스위치 구조가 가능하다"는 상한선이다.
+- **예측은 좋아지지 않았다.** Contact 구간 실제 오차 0.0348은 h_int를 끈 예측(0.0349)과 같다. α=1로 켜도 0.8%만 준다. Gate가 제대로 열려도, 열렸을 때 고칠 h_int가 contact 효과를 배우지 못했다.
+- Contact 구간 오차는 non-contact의 6.4배다(E5a의 6.6배와 같은 양상).
+
+**잔차 probe: 병목은 latent의 obstacle 정보다** (`scripts/probe_residual.py`, `cfjepa_collision_n2/weights_epoch_10.pt` 고정)
+- 방법: clip의 마지막 position(history 3 frame을 모두 본 예측)에서 잔차 r = z^c_{t+1} − (CF-JEPA z^c 예측)을 구하고, 큰 MLP(hidden 512, early stopping)로 r을 맞힌다. Episode 기준 80/20 분할의 test에서 오차 감소율을 본다.
+  - 입력 `zc`: z^c_{t-2..t} + action / `zc+zu`: z^c, z^u_{t-2..t} + action (h_int가 볼 수 있는 정보) / `oracle`: agent 위치_{t-2..t}, obstacle 위치·속도_t + action (ground-truth state).
+  - 지표 B = 1 − |r − r̂|² / |r − group 평균 r|². 잔차의 평균(bias)만 맞혀도 |r|²이 크게 줄어서(랜덤 모델에서 0.97), group별 평균을 빼고 남는 오차 대비로 본다. 주 지표다.
+- 결과 (B, 괄호 안은 |r|² 대비 A):
+
+| 입력 | 1,500 episode: non-contact | 1,500: contact | **10,000 episode: non-contact** | **10,000: contact** |
+|---|---|---|---|---|
+| zc | 0.247 (0.354) | −0.075 (0.015) | 0.369 (0.457) | 0.031 (0.105) |
+| zc+zu | 0.230 (0.339) | −0.053 (0.034) | 0.311 (0.406) | 0.046 (0.120) |
+| oracle | 0.206 (0.319) | 0.016 (0.098) | 0.417 (0.497) | **0.405** (0.451) |
+
+- 1,500 episode에서는 oracle도 contact 잔차를 맞히지 못했다(contact 학습 샘플 약 1,700개). 10,000 episode로 늘리니 oracle은 contact 잔차의 40%를 설명한다. 즉 contact 효과는 정확한 state가 있으면 예측할 수 있다.
+- **그런데 latent(zc+zu)로는 4.6%만 설명한다.** 충분한 data와 큰 MLP로도 이 정도이므로, h_int를 키워도 크게 나아지지 않는다. E5 probe에서 obstacle 위치가 R² 0.86~0.93(agent는 0.999)으로만 읽힌 것과 맞는다. "다음 5 step에 부딪혀 얼마나 밀릴지"를 계산하기에는 latent의 obstacle 위치가 너무 흐릿하다.
+- Non-contact 잔차는 입력과 관계없이 25~40% 설명된다. g가 contact와 무관하게 underfit된 부분이 있고, h_int가 contact보다 non-contact를 더 도운 이유가 이것이다.
+
+**해석**
+- 병목은 gate(스위치)도 h_int의 크기도 아니라, encoder가 obstacle 위치·속도를 충분히 정밀하게 담지 않는 것이다.
+- 이득 기반 gate가 라벨 없이 열리려면 "켰을 때 contact에서만 크게 이득"이어야 하는데, 지금 latent에서는 그 이득 자체가 없다. 그래서 E5의 sparsity 방식, E6의 gain 방식이 모두 실패했다.
+
+**남은 일**
+- Latent에 obstacle 정보를 정밀하게 담는 방법을 찾는다. 후보: z^u 차원 64 → 128, distractor 없이(N=0) 학습해 z^u 용량 경쟁 제거, h_int 보조 loss 비중 높이기, 여러 step 예측 loss. 2~3 epoch 학습 후 `probe_latent.py`, `probe_residual.py`의 `zc+zu` contact B가 4.6%에서 oracle(40%) 쪽으로 오르는지로 비교한다.
+- 그 뒤 h_int의 contact 이득이 커지면, 이득 기반 gate를 절대 이득 기준으로 다시 학습해 라벨 없이 AUROC 0.8 이상(H3)이 나오는지 본다. 이번 결과에서도 절대 이득의 AUROC(0.60)가 상대 이득(0.32~0.35)보다 나았다.
+- 아직 하지 않은 것: `cfjepa_collision_n2`의 `analyze_gate.py` 결과와 epoch별 loss, 모든 모델의 planning 성공률(`eval.py --config-name=collision_tworoom`, H1), Distractor env 평가(H2), seed 3개, 학습에 쓰지 않은 평가 data.
+
+**결과물:** checkpoint(`cfjepa_collision_n2/weights_epoch_10.pt`, `gate_sup_n2/weights_epoch_10.pt`, `gate_gain_n2/weights_epoch_6.pt`, 각 `config.json`)와 분석 CSV(`an_gate_main.csv`, `an_gate_diag.csv`, `an_gate_gain_e6.csv`, `an_gate_sup.csv`)를 Proton Drive `results/E6_gate_objectives/`에 올린다. E5 checkpoint(`gate_collision_n2/weights_epoch_10.pt`)와 metrics는 `results/E5_gate/`에 올린다. `gate_diag` checkpoint는 받지 않았다. Colab VM은 11/2 오전에 종료했다.
