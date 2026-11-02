@@ -125,6 +125,7 @@ class CFJEPA(LeWM):
         head_hidden_dim: int = 512,
         grl_scale: float = 1.0,
         cost: str = 'sum_l2',
+        contact_head: bool = False,
         **kwargs,
     ):
         # pred_proj는 FactorizedPredictor 안에 z^c, z^u별로 있으므로 여기서는 Identity다.
@@ -136,6 +137,11 @@ class CFJEPA(LeWM):
         self.cost = cost
         self.inverse_head = two_layer_mlp(2 * self.dim_c, head_hidden_dim, action_dim)  # ψ
         self.adversary_head = two_layer_mlp(2 * self.dim_u, head_hidden_dim, action_dim)  # φ
+        # contact 보조 head (E10): [z_{t-1}, z_t] 전체(z^c, z^u)로 "다음 transition에 contact가 있는가"를
+        # 맞힌다. 미래 contact는 obstacle의 위치와 속도를 알아야 맞힐 수 있으므로, encoder가 obstacle을
+        # 정밀하게 담도록 미는 학습 신호다. 학습에만 쓰고 예측과 planning에는 쓰지 않는다.
+        d = self.dim_c + self.dim_u
+        self.contact_head = two_layer_mlp(2 * d, head_hidden_dim, 1) if contact_head else None
 
     def split(self, emb: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return emb.split([self.dim_c, self.dim_u], dim=-1)

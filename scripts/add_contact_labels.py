@@ -14,9 +14,14 @@ frame j -> j+frameskip 동안의 contact는 row j+1 .. j+frameskip이다(scripts
 원본을 학습 중인 다른 process가 읽고 있을 수 있으므로, 사본을 만들어 거기에 쓴다
 (configs/train/data/collision_tworoom_contact.yaml이 이 사본을 읽는다).
 
+`--label-frac p`를 주면 episode의 p 비율에만 라벨을 남긴 column `contact_next_p<백분율>`
+(예: 0.02 -> `contact_next_p2`)도 더한다. 나머지 episode는 NaN이고, 학습의 contact 보조 loss가
+NaN을 건너뛴다. "적은 라벨" 실험(E10)용이다. 어떤 episode에 라벨을 남길지는 --label-seed로 고정한다.
+
 사용:
     cp $STABLEWM_HOME/datasets/collision_tworoom.h5 $STABLEWM_HOME/datasets/collision_tworoom_contact.h5
     python scripts/add_contact_labels.py --data collision_tworoom_contact.h5
+    python scripts/add_contact_labels.py --data collision_tworoom_contact.h5 --label-frac 0.02
 """
 
 import argparse
@@ -43,6 +48,8 @@ def main():
     ap.add_argument('--data', default='collision_tworoom_contact.h5')
     ap.add_argument('--frameskip', type=int, default=5)
     ap.add_argument('--force', action='store_true', help='contact_next가 이미 있으면 다시 쓴다')
+    ap.add_argument('--label-frac', type=float, default=None, help='이 비율의 episode에만 라벨을 남긴 column도 만든다')
+    ap.add_argument('--label-seed', type=int, default=0)
     args = ap.parse_args()
 
     import h5py
@@ -50,21 +57,33 @@ def main():
     import stable_worldmodel as swm
 
     path = Path(swm.data.utils.get_cache_dir()) / 'datasets' / args.data
+    blosc = hdf5plugin.Blosc(cname='lz4', clevel=5, shuffle=hdf5plugin.Blosc.SHUFFLE)
     with h5py.File(path, 'a') as f:
-        if 'contact_next' in f:
-            if not args.force:
-                print(f'{path}: contact_next가 이미 있다. 다시 쓰려면 --force')
-                return
-            del f['contact_next']
         ep_len = f['ep_len'][:].astype(np.int64)
         ep_off = f['ep_offset'][:].astype(np.int64) if 'ep_offset' in f else np.concatenate([[0], np.cumsum(ep_len)[:-1]])
         contact = f['contact'][:].reshape(len(f['contact']), -1)[:, 0]
         lab = contact_next_labels(contact, ep_off, ep_len, args.frameskip)
-        blosc = hdf5plugin.Blosc(cname='lz4', clevel=5, shuffle=hdf5plugin.Blosc.SHUFFLE)
-        f.create_dataset('contact_next', data=lab[:, None], chunks=(min(1000, len(lab)), 1), **blosc)
-    print(f'{path}: contact_next 추가 (rows {len(lab)}, frameskip {args.frameskip})')
-    print(f'contact step ratio {contact.astype(bool).mean():.4f}  contact_next ratio {lab.mean():.4f}')
-
+        if 'contact_next' in f and not args.force:
+            print(f'{path}: contact_next가 이미 있다. 다시 쓰려면 --force')
+        else:
+            if 'contact_next' in f:
+                del f['contact_next']
+            f.create_dataset('contact_next', data=lab[:, None], chunks=(min(1000, len(lab)), 1), **blosc)
+            print(f'{path}: contact_next 추가 (rows {len(lab)}, frameskip {args.frameskip})')
+            print(f'contact step ratio {contact.astype(bool).mean():.4f}  contact_next ratio {lab.mean():.4f}')
+        if args.label_frac is not None:
+            name = f'contact_next_p{round(args.label_frac * 100):d}'
+            rng = np.random.default_rng(args.label_seed)
+            keep = rng.random(len(ep_len)) < args.label_frac
+            part = np.full(len(lab), np.nan, dtype=np.float32)
+            for o, L, k in zip(ep_off, ep_len, keep):
+                if k:
+                    part[o:o + L] = lab[o:o + L]
+            if name in f:
+                del f[name]
+            f.create_dataset(name, data=part[:, None], chunks=(min(1000, len(part)), 1), **blosc)
+            n_lab = int((~np.isnan(part)).sum())
+            print(f'{name} 추가: 라벨 episode {keep.sum()}/{len(ep_len)}, 라벨 row {n_lab}/{len(part)} ({n_lab / len(part):.4f})')
 
 if __name__ == '__main__':
     main()

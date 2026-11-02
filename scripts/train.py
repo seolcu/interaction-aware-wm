@@ -84,6 +84,28 @@ def world_model_forward(self, batch, stage, cfg):
         output['adv_loss'] = masked_mse(self.model.adversary(z_u[:, :-1], z_u[:, 1:]), act, mask)
         loss = loss + cfg.loss.inv_weight * output['inv_loss'] + cfg.loss.adv_weight * output['adv_loss']
 
+    # ---- [contact 보조 loss] E10 (11/2) ---------------------------------------------
+    # 예측 loss만으로는 encoder가 obstacle(조종할 수 없지만 control에 중요한 것)을 흐릿하게만 담는다
+    # (E9 잔차 probe, arXiv 2606.30068). contact 라벨로 encoder에 직접 신호를 준다.
+    # [z_{t-1}, z_t] -> contact_next[t] (frame t -> t+1 동안 contact가 있었는가). 라벨이 NaN인 row
+    # (--label-frac로 지운 episode)는 건너뛴다. model.contact_head가 없으면 이 블록을 건너뛴다.
+    head = getattr(self.model, 'contact_head', None)
+    aux_w = cfg.model.get('contact_aux_weight', 0.0)
+    if head is not None and aux_w > 0:
+        lab = batch[cfg.model.get('contact_aux_key', 'contact_next')].float()[..., 0]  # (B, T), z-score 정규화됨
+        lab = lab[:, 1:]
+        valid = ~torch.isnan(lab)
+        logit = head(torch.cat([emb[:, :-1], emb[:, 1:]], dim=-1)).float()[..., 0]  # (B, T-1)
+        y = (torch.nan_to_num(lab, 0.0) > 0).float()
+        bce = torch.nn.functional.binary_cross_entropy_with_logits(logit, y, reduction='none')
+        n_valid = valid.float().sum()
+        output['contact_aux_loss'] = (bce * valid).sum() / n_valid.clamp(min=1)
+        loss = loss + aux_w * output['contact_aux_loss']
+        self.log_dict({f'{stage}/contact_label_frac': valid.float().mean(),
+                       f'{stage}/contact_aux_acc': (((logit > 0).float() == y).float() * valid).sum() / n_valid.clamp(min=1)},
+                      on_step=True, sync_dist=True)
+    # ---- [contact 보조 loss] 끝 -------------------------------------------------------
+
     # ---- [interaction gate] 강연우 추가 (11/1) ----------------------------------------
     # predictor가 InteractionGatedPredictor(src/iawm/cfjepa_gate.py)이면 sparsity ρ·E[α]를
     # loss에 더하고 α 통계를 로깅한다. ρ는 model config의 gate_sparsity_weight다.

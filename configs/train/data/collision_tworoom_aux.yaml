@@ -1,0 +1,17 @@
+# Collision TwoRoom + contact 라벨 두 종류 (E10, contact 보조 loss). collision_tworoom_contact.yaml에
+# 2% episode에만 라벨을 남긴 contact_next_p2를 더 읽는다. 준비:
+#   python scripts/add_contact_labels.py --data collision_tworoom_contact.h5 --label-frac 0.02
+# 어떤 column을 쓸지는 model.contact_aux_key로 고른다(contact_next = 100%, contact_next_p2 = 2%).
+dataset:
+  num_steps: 4      # history_size + num_preds
+  frameskip: 5
+  name: collision_tworoom_contact.h5
+  keys_to_load:
+    - pixels
+    - action
+    - proprio
+    - contact_next
+    - contact_next_p2
+  keys_to_cache:
+    - action
+    - proprio
