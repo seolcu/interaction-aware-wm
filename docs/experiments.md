@@ -308,7 +308,7 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 **설정** (E3, E5와 같고 data만 다르다)
 - Data: HF `quentinll/lewm-pusht`의 `pusht_expert_train.h5`(압축 13GB, 풀면 46GB). `TASK=pusht bash scripts/colab/setup_lewm.sh`로 받는다.
 - Env: `envs/distractor_pusht.py`(`iawm/PushTDistractor-v1`). TwoRoom과 같은 사각형을 `DistractorMixin`(`envs/distractor_mixin.py`)으로 붙인다.
-- 학습: inv_weight 3(논문 PushT 값, TwoRoom과 같음), 10 epochs, batch 128, seed 3072, Colab A100 2대에서 동시에 학습한다.
+- 학습: inv_weight 3(논문 PushT 값, TwoRoom과 같음), 10 epochs, batch 128, seed 3072, Colab A100.
   - `bash scripts/colab/train_cfjepa.sh data=pusht model=cfjepa output_model_name=cfjepa_pusht_n2`
   - `bash scripts/colab/train_cfjepa.sh data=pusht model=lewm output_model_name=lewm_pusht_n2`
 - 평가: `bash scripts/colab/eval_cfjepa.sh <ckpt> <N> --config-name=pusht` (CEM 300×30, 50 episodes, eval seed 42).
@@ -323,7 +323,16 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 - N=0: **0.94** (논문 0.96), N=2: 0.92. 평가 pipeline이 PushT에서도 정상이다. TwoRoom(E3)과 마찬가지로 깨끗하게 학습한 LeWM은 사각형에 거의 영향을 받지 않는다.
 
 **학습 진행** (11/1 21:00 시작)
-- 1 epoch는 13,933 step이고, 속도는 약 2.1 it/s다(TwoRoom 3.3 it/s). GPU 사용률이 13~85%로 오르내린다. 46GB data를 읽는 data loader가 병목이다.
-- 이 속도면 10 epoch에 약 18시간이 걸린다. 끝나는 시각은 11/2 오후 3시 무렵으로 예상한다.
+- 1 epoch는 13,933 step이다. 처음에는 약 2.1 it/s였다(TwoRoom 3.3 it/s). GPU 사용률이 13~85%로 오르내렸고, 46GB data를 읽는 data loader가 병목이었다. page cache가 차면 3.4~3.7 it/s까지 오른다.
+- **Colab 세션이 학습 도중 세 번 사라졌다.**
+  - CF-JEPA 세션: 11/1 22:00 전후와 23:30 무렵에 사라졌다. A100 두 대를 동시에 쓰던 때다.
+  - LeWM 세션: 혼자 돌던 11/2 04:50 무렵에도 사라졌다(epoch 5 완료 후).
+  - 원인은 확인하지 못했다. A100 한 대만 써도 생기므로, 언제든 세션이 끊길 수 있다고 보고 대응한다.
+- **대응: 끊긴 지점부터 이어서 학습(resume)한다.**
+  - spt는 epoch마다 optimizer 상태까지 담긴 전체 checkpoint(`/root/.cache/stable-pretraining/runs/.../checkpoints/epoch=K-step=N.ckpt`)를 남긴다. 이것을 epoch마다 로컬로 받아 둔다.
+  - 새 세션에서는 이 파일을 `$STABLEWM_HOME/checkpoints/<output_model_name>/<output_model_name>_weights.ckpt`에 두고 같은 명령으로 학습을 시작한다. `scripts/train.py`가 이 파일을 찾아 이어서 학습한다. 11/2 10:27에 LeWM을 epoch 5 끝에서 이어받았다(log: "Restored all states from the checkpoint").
+  - Colab CLI의 upload에는 크기 제한이 있고(217MB 파일은 500 오류), 없는 폴더로 올려도 같은 오류가 난다. 그래서 45MB 조각으로 `/content`에 올린 뒤 Colab에서 합친다.
+  - 관리 script(로컬 `outputs/pusht_manager/`, git 제외)가 15분마다 세션을 확인한다. 세션이 사라지거나 학습이 죽거나 30분 넘게 멈추면, 새 세션을 만들어 이어서 학습한다. 복구는 job당 3회까지만 한다.
+- 순서: LeWM을 먼저 끝내고(11/2 16시 예상), 그다음 CF-JEPA를 새 세션에서 학습한다(11/3 새벽 예상). A100은 한 번에 한 대만 쓴다.
 
 **결과:** (학습이 끝나면 채운다)
