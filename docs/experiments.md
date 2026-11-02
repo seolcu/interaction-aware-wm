@@ -485,3 +485,53 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 - 아직 하지 않은 것: `cfjepa_collision_n2`의 `analyze_gate.py` 결과와 epoch별 loss, 모든 모델의 planning 성공률(`eval.py --config-name=collision_tworoom`, H1), Distractor env 평가(H2), seed 3개, 학습에 쓰지 않은 평가 data.
 
 **결과물:** Proton Drive `results/E9_gate_objectives/`에 checkpoint 3개(`cfjepa_collision_n2_weights_epoch_10.pt`, `gate_sup_n2_weights_epoch_10.pt`, `gate_gain_n2_weights_epoch_6.pt`)와 각 config, 분석 CSV(`an_gate_main.csv`, `an_gate_diag.csv`, `an_gate_gain_e6.csv`, `an_gate_sup.csv`)가 있다. Colab VM은 11/2 오전에 종료했다.
+
+## 2026-11-02 · E10. Encoder가 obstacle 정보를 담게 하는 방법 진단 (3 epoch)
+
+**목적:** E9 잔차 probe에서 병목이 encoder로 나왔다. 충돌 순간 CF-JEPA z^c 잔차를 latent(zc+zu)는 4.6%, oracle state는 40% 설명했다. 이 결과는 2606.30068의 주장과 맞는다. Reward 없는 예측 objective는 control에 필요한 외부(exogenous) feature를 버리고, 라벨 약 2%로 이를 되살릴 수 있다는 내용이다. 짧은 학습(3 epoch)으로 다음 두 후보가 encoder의 obstacle 정보를 늘리는지 비교한다. Gate 재학습(2단계)에 쓸 encoder를 고르는 단계다.
+- (A) contact 보조 loss
+- (B) distractor 제거
+
+**구현**
+- `scripts/train.py` `[contact aux]` 블록: `model.contact_head=true`이면 two-layer MLP 하나가 [z_{t-1}, z_t](z^c+z^u 전체)로부터 `contact_next[t]`(다음 5 step 안 contact)를 BCE로 예측한다. 이 loss는 encoder까지 backprop된다. 가중치는 `model.contact_aux_weight`이고, 라벨은 z-score 정규화되어 있어 0보다 크면 1로 본다. NaN인 row는 loss에서 뺀다.
+- `scripts/add_contact_labels.py --label-frac 0.02`: episode 단위로 2%(seed 0, 10,000 중 190 episode, row 1.91%)에만 라벨을 남긴 `contact_next_p2`를 만든다. 나머지 row는 NaN이다.
+- `configs/train/data/collision_tworoom_aux.yaml`: `contact_next`, `contact_next_p2`를 함께 읽는다.
+- `src/iawm/cfjepa.py`, `cfjepa_gate.py`: `contact_head` 인자를 더했다.
+
+**학습** (Colab A100, `model=cfjepa`, `data=collision_tworoom_aux`, 3 epoch, 나머지는 E9와 같다. 두 학습씩 한 GPU를 나눠 썼다)
+
+| 이름 | 설정 |
+|---|---|
+| `e10_base` | CF-JEPA 그대로 (3 epoch 기준선) |
+| `e10_lab2` | (A) contact 보조 loss, 라벨 2% (`+model.contact_head=true +model.contact_aux_weight=1.0 +model.contact_aux_key=contact_next_p2`) |
+| `e10_lab100` | (A') contact 보조 loss, 라벨 100% (`contact_aux_key=contact_next`) |
+| `e10_n0` | (B) distractor 없음 (`distractor.num=0`) |
+
+- 명령과 순서: `outputs/e10/e10_pipeline.sh`(gitignored)가 data 수집, 라벨 추가, smoke test, 학습, probe를 차례로 한다. 학습 한 개가 GPU 메모리를 약 13GB 써서, A100 40GB에 4개를 동시에 띄우면 2개가 OOM으로 바로 죽는다. 그래서 2개씩 나눠 돌렸다.
+- `e10_base`, `e10_lab2`는 처음 돌릴 때 학습 도중 세션이 꺼졌다. PushT manager(E7)가 LeWM을 마친 뒤 Colab 세션을 전부 종료했기 때문이다. 새 세션에서 data를 다시 만들어 재학습했다. 수집 seed가 같아 data 통계(row 659,451, contact_next 0.1488, p2 190 episode)가 같다.
+- 판정: `python scripts/probe_residual.py --ckpt <name>/weights_epoch_3.pt --episodes 10000` (E9와 같은 방법, 지표 B)
+
+**결과** (contact 구간 B. 괄호는 non-contact B. "oracle 대비"는 latent B / oracle B)
+
+| 모델 | zc | zc+zu | oracle | oracle 대비 | |r|² contact / non-contact |
+|---|---|---|---|---|---|
+| E9 `cfjepa_collision_n2` (10 epoch, 참고) | 0.031 | 0.046 (0.311) | 0.405 | 11% | — |
+| `e10_base` | 0.154 | 0.152 (0.533) | 0.504 | 30% | 0.0405 / 0.0083 |
+| `e10_lab2` | 0.227 | **0.252** (0.617) | 0.572 | **44%** | 0.0541 / 0.0133 |
+| `e10_lab100` | 0.210 | 0.209 (0.523) | 0.593 | 35% | 0.0554 / 0.0122 |
+| `e10_n0` | 0.410 | **0.445** (0.823) | 0.449 | **99%** | 0.3719 / 0.2319 |
+
+**해석**
+- **학습을 오래 하면 obstacle 정보가 줄어든다.** 같은 CF-JEPA인데 3 epoch(15.2%)가 10 epoch(4.6%)보다 latent의 contact B가 높다. 예측 objective만으로 학습을 계속하면 encoder가 obstacle 정보를 버린다는 2606.30068의 설명과 맞는다. 다만 E9와 E10은 data를 따로 수집했다.
+- **(A) contact 라벨 2%는 효과가 있다.** zc+zu B가 0.152에서 0.252로, oracle 대비 30%에서 44%로 올랐다. 라벨 100%(0.209)는 2%보다 오히려 낮다. 라벨 양보다 보조 신호가 있는지 없는지가 중요해 보이며, seed 1개라 2%와 100%의 차이는 noise일 수 있다.
+- **그러나 늘어난 정보가 대부분 z^c에 들어갔다.** 라벨 100%에서 zc만 넣은 B(0.210)와 zc+zu(0.209)가 같다. 라벨 2%에서도 z^u가 더한 몫은 0.025뿐이다. 보조 head가 z^c+z^u 전체를 보기 때문에, 정보가 controllable 쪽에 섞여 들어간다. CF-JEPA의 분리 의도와 어긋나는 결과다.
+- **(B) distractor를 없애면 latent가 oracle만큼 맞힌다**(oracle 대비 99%). Distractor 사각형과 obstacle이 z^u 용량을 두고 경쟁해서 obstacle 정보가 흐려졌다는 가설과 맞는다. 다만 이 모델은 잔차 크기가 다른 모델의 약 10배여서(non-contact |r|² 0.23 vs 0.01), z^c 예측 자체가 3 epoch에서 덜 학습된 상태다. B는 정규화된 비율이라 비교는 되지만, 같은 조건이라고 보기는 어렵다. 또 distractor가 없으면 Distractor env robustness(H2)를 확인할 수 없으므로, 이 설정을 그대로 최종 모델로 쓸 수는 없다.
+
+**남은 일**
+- 2단계 후보:
+  - 라벨 2% 보조 loss를 쓰되, head 입력을 z^u(와 z^c의 stop-gradient)로 바꿔 obstacle 정보가 z^u에 들어가게 한다.
+  - Distractor 개수를 학습 중에 0에서 2로 늘리는 curriculum.
+  - 선택한 encoder로 10 epoch 학습한 뒤 h_int의 contact 이득과 contact 지도·이득 기반 gate를 다시 본다(E9의 0.4~0.8% 대비).
+- 아직 하지 않은 것: seed 반복, 10 epoch에서도 효과가 유지되는지, planning 성공률.
+
+**결과물:** Proton Drive `results/E10_encoder_diag/`에 4개 모델의 `weights_epoch_3.pt`와 config, probe 출력(`probe_e10_*.txt`)이 있다. Colab VM은 종료했다.
