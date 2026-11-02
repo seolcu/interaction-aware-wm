@@ -36,9 +36,16 @@ IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3)
 IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3)
 
 
-def add_distractors(batch, cfg):
-    """batch['pixels'] (B, T, C, H, W, ImageNet 정규화)에 사각형을 덧그린다."""
+def add_distractors(batch, cfg, epoch=None):
+    """batch['pixels'] (B, T, C, H, W, ImageNet 정규화)에 사각형을 덧그린다.
+
+    `distractor.curriculum_epochs=K`(E11)이면 학습 epoch e에서 사각형 수를 round(num·e/K)로
+    0부터 늘린다(e ≥ K부터 num). epoch=None(validation)이면 항상 num개다.
+    """
     n = cfg.distractor.num
+    k = cfg.distractor.get('curriculum_epochs', 0)
+    if k and epoch is not None and epoch < k:
+        n = round(n * epoch / k)
     if n <= 0:
         return
     pixels = batch['pixels']
@@ -62,7 +69,7 @@ def world_model_forward(self, batch, stage, cfg):
     action_valid = (~torch.isnan(batch['action']).any(-1)).float()  # (B, T)
     batch['action'] = torch.nan_to_num(batch['action'], 0.0)
 
-    add_distractors(batch, cfg)
+    add_distractors(batch, cfg, epoch=self.current_epoch if self.training else None)
     output = self.model.encode(batch)
     emb = output['emb']  # (B, T, D)
     act_emb = output['act_emb']
@@ -95,7 +102,13 @@ def world_model_forward(self, batch, stage, cfg):
         lab = batch[cfg.model.get('contact_aux_key', 'contact_next')].float()[..., 0]  # (B, T), z-score 정규화됨
         lab = lab[:, 1:]
         valid = ~torch.isnan(lab)
-        logit = head(torch.cat([emb[:, :-1], emb[:, 1:]], dim=-1)).float()[..., 0]  # (B, T-1)
+        # contact_aux_input=zu(E11): z^c를 stop-gradient해서, 보조 loss가 z^u에만 obstacle 정보를 넣게 한다.
+        # E10에서 full 입력은 늘어난 정보가 대부분 z^c로 갔다.
+        h = emb
+        if cfg.model.get('contact_aux_input', 'full') == 'zu':
+            dc = self.model.dim_c
+            h = torch.cat([emb[..., :dc].detach(), emb[..., dc:]], dim=-1)
+        logit = head(torch.cat([h[:, :-1], h[:, 1:]], dim=-1)).float()[..., 0]  # (B, T-1)
         y = (torch.nan_to_num(lab, 0.0) > 0).float()
         bce = torch.nn.functional.binary_cross_entropy_with_logits(logit, y, reduction='none')
         n_valid = valid.float().sum()
