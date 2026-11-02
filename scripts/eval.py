@@ -4,6 +4,7 @@
 - repo의 src/와 envs/를 import path에 넣고, Distractor TwoRoom과 Collision TwoRoom env를 등록한다.
 - 결과 파일을 $STABLEWM_HOME/results/<output.filename>에 쓴다.
 - `+cost=last_mse`로 CF-JEPA의 planning cost를 평가 때 바꿀 수 있다(학습과 무관).
+- `+gate_mode=off`로 gate 모델의 h_int를 끄고 평가할 수 있다(같은 encoder로 gate 효과만 비교).
 
 사용 예:
     python scripts/eval.py policy=cfjepa_tworoom_n2/weights_epoch_10.pt world.num_distractors=2
@@ -112,6 +113,8 @@ def run(cfg: DictConfig):
         model.interpolate_pos_encoding = True
         if cfg.get("cost") is not None:  # CF-JEPA planning cost 바꾸기: sum_l2(논문 Eq. 7) | last_mse
             model.cost = cfg.cost
+        if cfg.get("gate_mode") is not None:  # gate 모델의 α 바꾸기: learned | always | off (E12, off는 CF-JEPA 부분만)
+            model.predictor.gate_mode = cfg.gate_mode
         config = swm.PlanConfig(**cfg.plan_config)
         solver = hydra.utils.instantiate(cfg.solver, model=model)
         policy = swm.policy.WorldModelPolicy(
