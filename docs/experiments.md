@@ -535,3 +535,36 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 - 아직 하지 않은 것: seed 반복, 10 epoch에서도 효과가 유지되는지, planning 성공률.
 
 **결과물:** Proton Drive `results/E10_encoder_diag/`에 4개 모델의 `weights_epoch_3.pt`와 config, probe 출력(`probe_e10_*.txt`)이 있다. Colab VM은 종료했다.
+
+## 2026-11-03 · E11. Encoder 수정 시도: z^u 전용 보조 loss와 distractor curriculum (3 epoch)
+
+**목적:** E10에서 contact 라벨 2% 보조 loss는 encoder의 obstacle 정보를 늘렸다(oracle 대비 30% → 44%). 그런데 늘어난 정보가 주로 z^c에 들어갔다. 또 distractor를 없애면 latent가 oracle만큼 맞혔지만, 그 설정은 Distractor env와 맞지 않는다. 두 문제를 각각 고친 설정을 E10과 같은 조건으로 비교한다.
+
+**구현** (`scripts/train.py`)
+- `+model.contact_aux_input=zu`: contact head 입력에서 z^c를 stop-gradient한다. 그러면 보조 loss의 gradient가 z^u 쪽으로만 encoder에 들어간다. 기본값 `full`은 E10과 같다.
+- `+distractor.curriculum_epochs=K`: 학습 epoch e에서 사각형 수를 round(num·e/K)로 정한다(e ≥ K부터 num). Validation은 항상 num이다. K=2, 3 epoch이면 사각형 수가 epoch 0, 1, 2에서 0, 1, 2개다.
+
+**학습** (`model=cfjepa`, `data=collision_tworoom_aux`, 3 epoch, 두 학습이 A100 한 장을 나눠 썼다. 파이프라인은 `outputs/e11/e11_pipeline.sh`)
+
+| 이름 | 설정 |
+|---|---|
+| `e11_zu` | 라벨 2% 보조 loss, `contact_aux_input=zu` |
+| `e11_cur` | 보조 loss 없음, `distractor.curriculum_epochs=2` |
+
+**결과** (contact 구간 B. 괄호는 non-contact B. E10 표와 같은 방법이다)
+
+| 모델 | zc | zc+zu | oracle | oracle 대비 | \|r\|² contact / non-contact |
+|---|---|---|---|---|---|
+| `e10_base` (참고) | 0.154 | 0.152 (0.533) | 0.504 | 30% | 0.0405 / 0.0083 |
+| `e10_lab2` (참고) | 0.227 | 0.252 (0.617) | 0.572 | 44% | 0.0541 / 0.0133 |
+| `e11_zu` | 0.151 | 0.133 (0.560) | 0.432 | 31% | 0.0671 / 0.0106 |
+| `e11_cur` | 0.007 | 0.033 (0.137) | 0.329 | 10% | 0.1499 / 0.0232 |
+
+**해석**
+- **z^u 전용 보조 loss는 효과가 없었다.** 결과가 base와 같다(31% vs 30%). 보조 loss를 z^u로만 흘리면 obstacle 정보가 z^u에 들어가지 않는다. Encoder가 z^u에 obstacle을 담는 데에는 보조 신호만으로 부족한 다른 제약이 있는 것으로 보인다. 예를 들어 adversarial loss가 z^u에서 action 정보를 지우는 과정이 agent 근처 정보를 함께 지우면, contact 예측이 어려워진다.
+- **Curriculum은 오히려 나빴다.** 마지막 epoch에 사각형이 갑자기 2개로 늘면서 z^c 예측 자체가 무너졌다. 잔차가 base의 2~4배이고, oracle B도 0.329로 낮다. 3 epoch는 curriculum에 너무 짧다.
+- E10의 차이(30%, 35%, 44%)는 seed 1개 결과라 noise일 수 있다. 확실히 큰 효과는 distractor 제거(99%)뿐이다.
+
+**결정:** 2단계(E12)에는 E10 `lab2` 설정(full 입력, 라벨 2%)을 쓴다. 이 설정이 측정된 것 중 가장 좋았다. 또 h_int는 z^c와 z^u를 모두 입력으로 받으므로, obstacle 정보가 z^c에 들어가도 h_int가 쓸 수 있다. z^u 차원을 키우는 시도는 시간과 compute unit 때문에 뒤로 미룬다.
+
+**결과물:** Proton Drive `results/E11_encoder_fix/`에 두 모델의 `weights_epoch_3.pt`와 config, probe 출력이 있다.
