@@ -335,7 +335,23 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
   - 관리 script(로컬 `outputs/pusht_manager/`, git 제외)가 15분마다 세션을 확인한다. 세션이 사라지거나 학습이 죽거나 30분 넘게 멈추면, 새 세션을 만들어 이어서 학습한다. 복구는 job당 3회까지만 한다.
 - 순서: LeWM을 먼저 끝내고(11/2 16시 예상), 그다음 CF-JEPA를 새 세션에서 학습한다(11/3 새벽 예상). A100은 한 번에 한 대만 쓴다.
 
-**결과:** (학습이 끝나면 채운다)
+- 학습 완료: LeWM 11/2 16:22, CF-JEPA 11/3 05:23(세션 끊김 없음). 평가는 11/3 05:56에 끝났다.
+
+**결과** (success rate, 50 episodes, eval seed 42, 두 모델 모두 N=2로 학습한 epoch 10)
+
+| 모델 | 평가 N=2 | 평가 N=0 | 논문 N=2 (Table III) |
+|---|---|---|---|
+| LeWM (`lewm_pusht_n2`) | **0.02** | 0.02 | 0.01 |
+| CF-JEPA, cost `sum_l2` (논문 Eq. 7) | 0.70 | 0.72 | 0.87 |
+| CF-JEPA, cost `last_mse` (`+cost=last_mse`) | **0.78** | 0.80 | — |
+| (참고) 공개 LeWM, 깨끗한 data로 학습 | 0.92 | 0.94 | — |
+
+- **논문의 핵심 차이를 재현했다.** 사각형이 있는 data로 학습하면 LeWM은 거의 실패하고(0.02), CF-JEPA는 0.70~0.78을 유지한다. TwoRoom(E3~E6)에 이어 두 번째 기존 benchmark다.
+- LeWM은 깨끗한 환경(N=0)에서도 0.02다. 사각형 때문에 planning이 흔들리는 수준이 아니라, 사각형이 있는 data로 학습한 것 자체가 표현을 망가뜨렸다는 뜻이다. Forward loss는 0.006까지 내려갔으므로, 학습이 안 된 것이 아니라 사각형 움직임을 예측하는 데 용량을 썼다고 본다. 깨끗하게 학습한 공개 LeWM이 N=2에서 0.92인 것과 대조된다.
+- CF-JEPA는 논문(0.87)보다 낮다. `last_mse` cost가 `sum_l2`보다 0.08 높은 것은 TwoRoom 튜닝(E6)과 같은 방향이다. 차이의 후보는 seed 1개(50 episodes의 표준오차 약 ±0.06), 코드 비공개로 생긴 구현 차이(distractor 배치, data 순서) 등이다.
+- 아직 하지 않은 것: seed 반복, eval episode 늘리기.
+
+**결과물:** Proton Drive `results/E7_pusht/`에 두 모델의 `weights_epoch_10.pt`와 config, 평가 결과 txt 6개, 평가 영상 일부가 있다. Colab VM은 평가 직후 종료했다.
 
 ## 2026-11-01 · E8. Interaction gate 첫 구현과 학습: collapse, 포화, probe
 
