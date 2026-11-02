@@ -1,4 +1,4 @@
-"""Collision TwoRoom h5에 transition 단위 contact 라벨 `contact_next`를 더한다 (E6, supervised gate용).
+"""Collision TwoRoom h5에 transition 단위 contact 라벨 `contact_next`를 더한다 (E9, supervised gate용).
 
 학습 data loader는 action 외의 column을 frameskip 간격으로 건너뛰어 읽는다(row s, s+5, s+10, ...).
 그래서 `contact` column을 그대로 읽으면 frame 사이 5 step 중 1 step의 contact만 보인다.

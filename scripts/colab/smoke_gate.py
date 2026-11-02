@@ -10,7 +10,7 @@
 6. Hydra로 model/cfjepa_gate.yaml을 만들고 scripts/train.py의 world_model_forward를 돌리면
    gate_sparsity_loss가 나오고 loss가 유한하며, gate와 h_int까지 gradient가 간다.
 7. get_cost가 (B, S) cost를 돌려준다(CEM planning 경로).
-8. (E6) gate_objective=gain / supervised: int_aux_loss와 gate_bce_loss가 유한하고,
+8. (E9) gate_objective=gain / supervised: int_aux_loss와 gate_bce_loss가 유한하고,
    gate는 BCE로만 학습된다(fwd loss -> gate gradient 없음, gate BCE -> encoder gradient 없음).
 
 사용: python scripts/colab/smoke_gate.py

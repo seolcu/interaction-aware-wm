@@ -174,8 +174,8 @@ class CFJEPA(LeWM):
 #   다가오는지 멀어지는지 알 수 없다(첫 frame은 Δ = 0).
 # - h_int의 마지막 층을 0으로 초기화한다. 학습 시작 시 출력이 CF-JEPA와 정확히 같다.
 #
-# gate_objective (E6에서 추가. E5에서 sparsity 방식의 gate가 0이나 1에 포화했다):
-# - 'sparsity':   L = L_CF-JEPA + ρ·E[α]. E5 방식.
+# gate_objective (E9에서 추가. E8에서 sparsity 방식의 gate가 0이나 1에 포화했다):
+# - 'sparsity':   L = L_CF-JEPA + ρ·E[α]. E8 방식.
 # - 'gain':       gate를 BCE로 학습한다. 목표는 "h_int를 켰을 때 z^c 예측 오차가 τ 이상 줄었는가"다.
 #                 contact 라벨을 쓰지 않는다.
 # - 'supervised': gate를 BCE로 학습한다. 목표는 contact 라벨(다음 frameskip step 안의 contact)이다.

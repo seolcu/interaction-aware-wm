@@ -3,7 +3,7 @@
 학습된 checkpoint를 불러 data의 마지막 N episode로 다음을 계산한다.
 - α의 contact 구분 AUROC (RQ2). gate가 없는 모델(CF-JEPA)은 건너뛴다.
 - contact / non-contact transition별 z^c 예측 오차 (README의 prediction error 지표).
-- (E6) gate 모델이면 h_int를 끈 예측(err_c_off, CF-JEPA 부분)과 켠 예측(err_c_on, α=1)의 오차,
+- (E9) gate 모델이면 h_int를 끈 예측(err_c_off, CF-JEPA 부분)과 켠 예측(err_c_on, α=1)의 오차,
   상대 이득 (off - on) / off를 contact별로 비교한다. gain gate의 τ를 정하는 근거다.
 
 Transition과 contact 라벨 맞추기:

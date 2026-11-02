@@ -1,6 +1,6 @@
-"""CF-JEPA의 z^c 예측 잔차를 frozen latent에서 맞힐 수 있는지 확인한다 (E6, 학습된 latent 위의 oracle 실험).
+"""CF-JEPA의 z^c 예측 잔차를 frozen latent에서 맞힐 수 있는지 확인한다 (E9, 학습된 latent 위의 oracle 실험).
 
-E6에서 h_int는 α=1로 직접 학습해도 contact 구간 z^c 오차를 0.4%밖에 줄이지 못했다. 이것이
+E9에서 h_int는 α=1로 직접 학습해도 contact 구간 z^c 오차를 0.4%밖에 줄이지 못했다. 이것이
 "latent에 정보가 부족해서"인지 "h_int가 배우지 못해서"인지 가른다.
 
 학습된 checkpoint를 고정하고, clip마다 마지막 position(history 3 frame을 모두 본 예측)에서

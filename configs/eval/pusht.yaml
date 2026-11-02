@@ -1,0 +1,49 @@
+# le-wm/config/eval/pusht.yaml에 distractor env를 붙였다.
+# CEM 300 samples × 30 iterations, horizon 5, receding horizon 5 (CF-JEPA §III-D와 같다).
+defaults:
+  - solver: cem
+  - override hydra/launcher: basic
+  - _self_
+
+cache_dir: null
+
+world:
+  env_name: iawm/PushTDistractor-v1
+  num_distractors: 2   # 0이면 원래 PushT와 같다
+  num_envs: ${eval.num_eval}
+  max_episode_steps: ???
+
+seed: 42
+policy: random # checkpoint 이름 또는 random
+
+dataset:
+  stats: ${eval.dataset_name}
+  keys_to_cache:
+    - action
+    - proprio
+    - state
+
+plan_config:
+  horizon: 5
+  receding_horizon: 5
+  action_block: 5 # frameskip
+
+# dataset의 expert 궤적에서 시작 상태와 25 step 뒤 goal을 뽑는다.
+eval:
+  num_eval: 50
+  goal_offset_steps: 25
+  eval_budget: 50
+  img_size: 224
+  dataset_name: pusht_expert_train
+  callables:
+    - method: _set_state
+      args:
+        state:
+          value: state
+    - method: _set_goal_state
+      args:
+        goal_state:
+          value: goal_state
+
+output:
+  filename: pusht_results.txt

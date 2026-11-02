@@ -88,10 +88,10 @@ def world_model_forward(self, batch, stage, cfg):
     # predictor가 InteractionGatedPredictor(src/iawm/cfjepa_gate.py)이면 sparsity ρ·E[α]를
     # loss에 더하고 α 통계를 로깅한다. ρ는 model config의 gate_sparsity_weight다.
     # last_alpha가 없는 모델(CF-JEPA, LeWM)은 이 블록을 건너뛰므로 기존 학습과 같다.
-    # ρ warmup (11/1 E5 첫 학습에서 gate가 1 epoch 만에 0으로 collapse해서 추가):
+    # ρ warmup (11/1 E8 첫 학습에서 gate가 1 epoch 만에 0으로 collapse해서 추가):
     # h_int가 쓸모를 배우기 전에 sparsity가 gate를 닫지 않도록, ρ를 0에서 시작해
     # gate_sparsity_warmup_steps 동안 선형으로 키운다.
-    # gate_objective가 gain / supervised이면 (11/1 E6, E5의 포화 때문에 추가) ρ 대신
+    # gate_objective가 gain / supervised이면 (11/1 E9, E8의 포화 때문에 추가) ρ 대신
     # 1) h_int 보조 loss: α와 무관하게 "α=1 예측"의 z^c 오차를 줄인다. gate가 닫혀도 h_int가 배운다.
     # 2) gate BCE: gain은 "h_int를 켜서 z^c 오차가 τ 이상 줄었는가", supervised는 contact 라벨이 목표다.
     alpha = getattr(self.model.predictor, 'last_alpha', None)

@@ -186,7 +186,8 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 - 평가 결과와 영상(episode별 mp4, agent / dataset / goal 3분할): Proton Drive `results/E3_cfjepa_tworoom/eval/`, 로컬 `outputs/cfjepa/eval/`.
 
 **남은 문제**
-- 논문 조건의 LeWM baseline(N=2로 학습)이 없다. 중간 발표 표에서 "LeWM 0.33"은 논문 인용으로 표시해야 한다.
+- 논문 조건의 LeWM baseline은 E5에서 학습했다(N=2 평가 0.30).
+- Planning cost를 LeWM 방식(마지막 step)으로 바꾸면 같은 checkpoint가 N=2에서 1.00이다(E6).
 - Seed 1개다. 최종 발표 전 3 seed로 늘린다(11/1 결정).
 
 ## 2026-11-01 · E4. Collision TwoRoom 학습 data
@@ -238,7 +239,105 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 - 공유: data 파일은 올리지 않는다. 같은 data가 필요하면 `python scripts/collect_collision.py`를 실행한다(seed 3072, CPU로 약 1시간).
 - 다음: 이 data로 CF-JEPA와 gate를 학습한다(강연우). 평가는 `bash scripts/colab/eval_cfjepa.sh`가 아니라 `python scripts/eval.py --config-name=collision_tworoom policy=<checkpoint>`로 한다.
 
-## 2026-11-01 · E5. Interaction gate 첫 구현과 학습: collapse, 포화, probe
+## 2026-11-01 · E5. LeWM을 distractor(N=2) 화면으로 학습
+
+**목적:** E3에서 공개 LeWM(깨끗한 data로 학습)은 N=2에서 0.84로 거의 무너지지 않았다. 논문 Table III는 "All models were trained with images augmented with N=2 distractors"라서 조건이 다르다. 논문과 같은 조건의 LeWM baseline을 직접 학습해, CF-JEPA와 공정하게 비교한다.
+
+**설정:** E3와 학습 data, distractor augmentation, epoch, batch, optimizer, seed(3072)가 모두 같고 모델만 LeWM이다(loss = L_fwd + 0.09·SIGReg).
+- 명령: `bash scripts/colab/train_cfjepa.sh model=lewm output_model_name=lewm_tworoom_n2`
+- Colab A100, 11/1 11:29~16:43 KST(약 5시간 10분).
+- Validation loss (epoch 1 → 10): fwd 0.029 → 0.008, SIGReg 7.3 → 1.46. 학습 자체는 정상적으로 수렴했다.
+
+**결과** (CEM 300×30, 50 episodes, eval seed 42, E3와 같은 시작점)
+
+| 모델 | 학습 data | 평가 N=0 | 평가 N=2 |
+|---|---|---|---|
+| CF-JEPA (E3) | N=2 augment | 0.94 | **0.88** (논문 0.95) |
+| LeWM (E5) | N=2 augment | 0.34 | **0.30** (논문 0.33) |
+| LeWM (공개 checkpoint, E0) | 깨끗한 data | 0.86 | 0.84 |
+
+- **논문의 LeWM 붕괴(0.33)를 직접 재현했다(0.30).** 같은 조건에서 CF-JEPA는 0.88이라, 논문의 핵심 비교(0.33 대 0.95)가 우리 실험에서도 나온다.
+- Distractor로 학습한 LeWM은 사각형이 없는 화면(N=0)에서도 0.34다. 즉 평가 화면의 사각형 때문이 아니라, 학습 중 latent가 사각형 움직임을 담게 되어 planning cost가 망가진 것으로 해석한다. 학습 loss는 정상적으로 낮아졌으므로, 예측을 못 하는 것이 아니라 planning에 쓸모없는 사각형까지 latent에 담는 것이 문제로 보인다.
+- 이 해석은 수치에서 나온 추정이다. latent를 직접 분석하지는 않았다.
+
+**결과물**
+- Checkpoint: Proton Drive `results/E5_lewm_tworoom_n2/weights_epoch_10.pt`, `config.json`. 다른 epoch는 설규원 로컬 `checkpoints/lewm_tworoom_n2/`에 있다.
+- 평가 결과와 영상: Proton Drive `results/E5_lewm_tworoom_n2/eval/`, 로컬 `outputs/lewm_n2/eval/`.
+
+**남은 문제**
+- Seed 1개다(E3와 같음).
+
+## 2026-11-01 · E6. CF-JEPA 평가 설정 튜닝 (재학습 없음)
+
+**목적:** E3의 N=2 0.88을 논문 값 0.95에 가깝게 올린다. 재학습(1회 5시간) 전에, 학습 없이 바꿀 수 있는 평가 설정부터 확인한다.
+
+**방법**
+- 보고용 시작점(eval seed 42, 50개)으로 튜닝하면 그 50개에 맞춘 결과가 된다. 그래서 튜닝은 seed 1~4(각 50, 합 200)로 하고, 고른 설정만 seed 42로 한 번 평가했다.
+- 비교한 것: checkpoint epoch(6, 8, 10), planning cost 두 가지.
+  - `sum_l2`: 논문 Eq. 7. 매 예측 step의 ||z^c_k − z^c_goal||를 더한다(E3 기본값).
+  - `last_mse`: LeWM 기본 criterion. 마지막 step의 squared error만 쓴다. E5의 LeWM도 이 cost로 평가했다.
+- 명령: `python scripts/colab/tune_eval.py cfjepa_tworoom_n2 e10_sum=10:sum_l2 e10_last=10:last_mse e8_sum=8:sum_l2 e6_sum=6:sum_l2`
+- 평가 때 cost만 바꾸는 옵션: `scripts/eval.py ... +cost=last_mse`
+
+**튜닝 결과** (N=2, seed 1~4, 200 episodes)
+
+| 설정 | 평균 | seed별 |
+|---|---|---|
+| epoch 10, sum_l2 (E3) | 0.89 | 0.96 / 0.82 / 0.92 / 0.86 |
+| epoch 10, last_mse | **0.99** | 0.98 / 1.00 / 1.00 / 0.98 |
+| epoch 8, sum_l2 | 0.88 | 0.92 / 0.82 / 0.92 / 0.86 |
+| epoch 6, sum_l2 | 0.86 | 0.90 / 0.78 / 0.92 / 0.84 |
+
+**보고용 시작점 결과** (seed 42, epoch 10, last_mse): N=2 **1.00**, N=0 **1.00**
+
+**해석**
+- 차이는 학습이 아니라 planning cost에서 나왔다. 같은 checkpoint가 cost만 바꿔 0.89 → 0.99가 된다. Epoch은 결과에 거의 영향이 없다.
+- `sum_l2`는 중간 step도 goal에 가까워야 cost가 낮다. TwoRoom은 벽을 돌아 문으로 가야 해서 중간에 goal에서 멀어지는 경로가 정답일 때가 있는데, 이 cost는 그런 경로를 불리하게 본다고 추정한다(확인하지 않음).
+- 논문 Eq. 7은 분명히 합이다. 그래서 "논문 그대로 구현하면 0.88~0.89, LeWM 기본 cost를 쓰면 0.99~1.00"으로 둘 다 기록한다. 논문 저자의 실제 코드가 어느 쪽인지는 알 수 없다(코드 미공개).
+- E5의 LeWM(0.30)도 `last_mse`로 평가했으므로, **같은 cost로 비교하면 CF-JEPA 1.00 대 LeWM 0.30**이다.
+- 1.00은 50 episode 기준이다. 튜닝 seed에서도 0.98~1.00이라 우연은 아니지만, 성공률 1.0 근처에서는 더 이상 차이를 볼 수 없다(천장 효과).
+
+**결정 제안 (팀 확인 필요):** 이후 gate 실험의 CEM 평가는 `+cost=last_mse`로 통일한다. 코드 기본값은 논문대로 `sum_l2`로 둔다.
+
+**결과물:** 평가 txt와 영상은 Proton Drive `results/E6_cfjepa_tuning/`, 로컬 `outputs/cfjepa/tune/`에 있다.
+
+## 2026-11-01 · E7. PushT: Distractor env에서 CF-JEPA와 LeWM (N=2)
+
+**목적:** 교수님 요청("기존 benchmark 수치를 여러 개")에 맞춰 TwoRoom 외의 기존 task를 하나 더 재현한다. PushT는 CF-JEPA 논문에서 차이가 가장 큰 task다(Table III, N=2: LeWM 0.01, CF-JEPA 0.87).
+
+**설정** (E3, E5와 같고 data만 다르다)
+- Data: HF `quentinll/lewm-pusht`의 `pusht_expert_train.h5`(압축 13GB, 풀면 46GB). `TASK=pusht bash scripts/colab/setup_lewm.sh`로 받는다.
+- Env: `envs/distractor_pusht.py`(`iawm/PushTDistractor-v1`). TwoRoom과 같은 사각형을 `DistractorMixin`(`envs/distractor_mixin.py`)으로 붙인다.
+- 학습: inv_weight 3(논문 PushT 값, TwoRoom과 같음), 10 epochs, batch 128, seed 3072, Colab A100.
+  - `bash scripts/colab/train_cfjepa.sh data=pusht model=cfjepa output_model_name=cfjepa_pusht_n2`
+  - `bash scripts/colab/train_cfjepa.sh data=pusht model=lewm output_model_name=lewm_pusht_n2`
+- 평가: `bash scripts/colab/eval_cfjepa.sh <ckpt> <N> --config-name=pusht` (CEM 300×30, 50 episodes, eval seed 42).
+
+**확인** (`scripts/colab/smoke_pusht.py`, 통과)
+- N=0이면 원래 `swm/PushT-v1`과 frame이 같다.
+- N=2이면 화면의 약 4.6%가 바뀌고, goal image는 원래 PushT와 같다(깨끗하다).
+- 그림: `outputs/pusht_distractor_sheet.png`(연속 20 step).
+- 한계: 사각형이 가장자리에 붙어 있어서, agent(파란 점)가 가장자리 근처에 가면 가려질 수 있다. 논문은 "task를 가리지 않게" 배치했다고만 적었다.
+
+**공개 LeWM checkpoint (깨끗한 data로 학습)로 pipeline 확인**
+- N=0: **0.94** (논문 0.96), N=2: 0.92. 평가 pipeline이 PushT에서도 정상이다. TwoRoom(E3)과 마찬가지로 깨끗하게 학습한 LeWM은 사각형에 거의 영향을 받지 않는다.
+
+**학습 진행** (11/1 21:00 시작)
+- 1 epoch는 13,933 step이다. 처음에는 약 2.1 it/s였다(TwoRoom 3.3 it/s). GPU 사용률이 13~85%로 오르내렸고, 46GB data를 읽는 data loader가 병목이었다. page cache가 차면 3.4~3.7 it/s까지 오른다.
+- **Colab 세션이 학습 도중 세 번 사라졌다.**
+  - CF-JEPA 세션: 11/1 22:00 전후와 23:30 무렵에 사라졌다. A100 두 대를 동시에 쓰던 때다.
+  - LeWM 세션: 혼자 돌던 11/2 04:50 무렵에도 사라졌다(epoch 5 완료 후).
+  - 원인은 확인하지 못했다. A100 한 대만 써도 생기므로, 언제든 세션이 끊길 수 있다고 보고 대응한다.
+- **대응: 끊긴 지점부터 이어서 학습(resume)한다.**
+  - spt는 epoch마다 optimizer 상태까지 담긴 전체 checkpoint(`/root/.cache/stable-pretraining/runs/.../checkpoints/epoch=K-step=N.ckpt`)를 남긴다. 이것을 epoch마다 로컬로 받아 둔다.
+  - 새 세션에서는 이 파일을 `$STABLEWM_HOME/checkpoints/<output_model_name>/<output_model_name>_weights.ckpt`에 두고 같은 명령으로 학습을 시작한다. `scripts/train.py`가 이 파일을 찾아 이어서 학습한다. 11/2 10:27에 LeWM을 epoch 5 끝에서 이어받았다(log: "Restored all states from the checkpoint").
+  - Colab CLI의 upload에는 크기 제한이 있고(217MB 파일은 500 오류), 없는 폴더로 올려도 같은 오류가 난다. 그래서 45MB 조각으로 `/content`에 올린 뒤 Colab에서 합친다.
+  - 관리 script(로컬 `outputs/pusht_manager/`, git 제외)가 15분마다 세션을 확인한다. 세션이 사라지거나 학습이 죽거나 30분 넘게 멈추면, 새 세션을 만들어 이어서 학습한다. 복구는 job당 3회까지만 한다.
+- 순서: LeWM을 먼저 끝내고(11/2 16시 예상), 그다음 CF-JEPA를 새 세션에서 학습한다(11/3 새벽 예상). A100은 한 번에 한 대만 쓴다.
+
+**결과:** (학습이 끝나면 채운다)
+
+## 2026-11-01 · E8. Interaction gate 첫 구현과 학습: collapse, 포화, probe
 
 **목적:** CF-JEPA에 interaction gate를 넣어 Collision TwoRoom data(E4)로 학습한다. Gate가 contact 순간에만 열리는지(RQ2) 확인한다.
 
@@ -254,30 +353,30 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 
 **학습 설정** (공통): Colab A100 40GB, seed 3072, batch 128, bf16-mixed, Distractor N=2 augment, `data=collision_tworoom`. 1 epoch는 약 3,300 step, 2.9 it/s다.
 
-**E5a. 첫 정식 학습** (`gate_collision_n2`, 10 epoch, 3시간 31분)
+**E8a. 첫 정식 학습** (`gate_collision_n2`, 10 epoch, 3시간 31분)
 - 설정: ρ = 1e-3, 시작 α = σ(0) = 0.5, warmup 없음.
 - 명령: `bash scripts/colab/train_cfjepa.sh model=cfjepa_gate data=collision_tworoom output_model_name=gate_collision_n2`
 - 결과 (validation, epoch 1 → 10): fwd 0.078 → 0.020, inv 0.82 → 0.77, adv ≈ 1.0. **α 평균 0.0006 → 0.0000, 최대값도 0.0000이다. Gate가 첫 epoch 안에 완전히 닫혔다(collapse).** 결과적으로 h_int가 꺼진 CF-JEPA와 같다.
 - 300 step 시험 학습에서는 α가 0.5 → 0.47로 천천히 내려가 문제가 없어 보였다. 300 step(전체의 1%)으로 판단한 것이 잘못이었다.
 
-**E5b. 진단 학습** (`gate_diag`, 1 epoch, 약 40분, 비교용 CF-JEPA와 같은 GPU에서 동시 실행)
+**E8b. 진단 학습** (`gate_diag`, 1 epoch, 약 40분, 비교용 CF-JEPA와 같은 GPU에서 동시 실행)
 - 바꾼 것: ρ를 0에서 시작해 선형으로 키우는 warmup(`gate_sparsity_warmup_steps`, 진단은 1,600 step, 기본값 6,600), 시작 α = σ(2) ≈ 0.88, ρ = 1e-4.
 - 명령: `bash scripts/colab/train_cfjepa.sh model=cfjepa_gate data=collision_tworoom output_model_name=gate_diag trainer.max_epochs=1 model.gate_sparsity_warmup_steps=1600`
-- 결과: α가 0.89 → 0.99로 올라 **모든 샘플에서 열렸다**(open ratio 1.0). E5a와 반대로 1에 포화했다.
+- 결과: α가 0.89 → 0.99로 올라 **모든 샘플에서 열렸다**(open ratio 1.0). E8a와 반대로 1에 포화했다.
 
 **α–contact 분석** (`scripts/analyze_gate.py`, data 마지막 500 episode, 15,399 transition, contact transition 16.2%)
 - Transition 라벨: frame s+5k → s+5k+5 예측의 contact는 `contact[s+5k+1 .. s+5k+5]` 중 하나라도 True인지다. `World.collect`가 row j에 step j-1 이후의 frame과 그 step의 info를 저장하고 action은 한 칸 당겨 저장하기 때문이다(stable-worldmodel 0.1.1 `world.py`에서 확인).
 
 | 모델 | α 분포 (중앙값) | AUROC(α → contact) | z^c 오차 non-contact | z^c 오차 contact | 비율 |
 |---|---|---|---|---|---|
-| E5a (닫힘, 10 epoch) | 3.8e-7 | **0.47** | 0.0054 | 0.0356 | **6.6×** |
-| E5b (열림, 1 epoch) | 0.988 | **0.54** | 0.0309 | 0.0680 | 2.2× |
+| E8a (닫힘, 10 epoch) | 3.8e-7 | **0.47** | 0.0054 | 0.0356 | **6.6×** |
+| E8b (열림, 1 epoch) | 0.988 | **0.54** | 0.0309 | 0.0680 | 2.2× |
 
 - **Gate는 contact를 구분하지 못한다.** 둘 다 무작위(0.5) 수준이다. 0이나 1 근처의 작은 차이 안에서도 contact 순서를 따르지 않는다.
-- **E5a(사실상 CF-JEPA)의 z^c 예측 오차는 contact 구간에서 6.6배 크다.** E2에서 ground-truth state로 보인 irreducible error를 학습된 latent에서도 확인한 것이다. 같은 data로 학습한 CF-JEPA(아래 남은 일)로 확정한다.
-- E5b의 오차가 전반적으로 큰 것은 1 epoch만 학습했기 때문이다. E5a와 직접 비교하지 않는다.
+- **E8a(사실상 CF-JEPA)의 z^c 예측 오차는 contact 구간에서 6.6배 크다.** E2에서 ground-truth state로 보인 irreducible error를 학습된 latent에서도 확인한 것이다. 같은 data로 학습한 CF-JEPA(아래 남은 일)로 확정한다.
+- E8b의 오차가 전반적으로 큰 것은 1 epoch만 학습했기 때문이다. E8a와 직접 비교하지 않는다.
 
-**Latent probe** (`scripts/probe_latent.py`, E5a checkpoint, 같은 500 episode의 frame, episode 기준 80/20 분할)
+**Latent probe** (`scripts/probe_latent.py`, E8a checkpoint, 같은 500 episode의 frame, episode 기준 80/20 분할)
 
 | target | z^c (linear / MLP) | z^u (linear / MLP) | z 전체 (linear / MLP) |
 |---|---|---|---|
@@ -289,13 +388,13 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 | contact (AUROC) | 0.989 / 0.989 | 0.970 / 0.987 | 0.989 / 0.988 |
 
 - **Contact는 latent에서 거의 완벽하게 읽힌다.** z^c만으로도 linear AUROC 0.989다. Obstacle 위치도 z^u에 비선형으로 들어 있다(MLP R² 0.93 / 0.86). Gate 입력에 필요한 정보는 있다.
-- **Agent 위치가 z^u에도 거의 완벽하게 들어 있다(R² 0.98~0.99).** Adversarial loss는 z^u에서 action 정보만 지우고 agent 위치는 지우지 않는다. 그래서 z^u는 순수한 "uncontrollable" 정보가 아니다. 이 때문에 h_int가 충돌과 무관하게 z^c 예측을 보조할 수 있고, E5b에서 gate가 항상 열린 것과 맞는다.
+- **Agent 위치가 z^u에도 거의 완벽하게 들어 있다(R² 0.98~0.99).** Adversarial loss는 z^u에서 action 정보만 지우고 agent 위치는 지우지 않는다. 그래서 z^u는 순수한 "uncontrollable" 정보가 아니다. 이 때문에 h_int가 충돌과 무관하게 z^c 예측을 보조할 수 있고, E8b에서 gate가 항상 열린 것과 맞는다.
 - 주의: probe의 contact는 "이 frame을 만든 step의 contact"(현재)이고, gate가 맞혀야 하는 것은 "다음 5 step 안의 contact"(가까운 미래)다. Contact는 보통 몇 step 이어져서 둘은 강하게 연관되지만 같지는 않다.
 - MLP probe는 처음에 과적합했다(합성 data에서 음수 R²). 학습 data의 10%로 early stopping을 넣어 고쳤다.
 
 **해석**
 - 실패 원인은 입력 정보나 gate의 표현력이 아니라 목적함수다. `예측 loss + ρ·E[α]`로는 gate가 "contact 때만 열어야 할" 학습 신호를 받지 못한다.
-  1. Sigmoid 포화: α가 0이나 1 근처에 가면 기울기 α(1−α)가 사라져, 예측 loss도 sparsity도 gate를 움직이지 못한다. 처음 기운 쪽(E5a는 0, E5b는 1)에 붙는다. E5a는 h_int 출력층을 0으로 초기화해서 초반에 gate가 예측 쪽 gradient를 전혀 받지 못한 것도 원인이다.
+  1. Sigmoid 포화: α가 0이나 1 근처에 가면 기울기 α(1−α)가 사라져, 예측 loss도 sparsity도 gate를 움직이지 못한다. 처음 기운 쪽(E8a는 0, E8b는 1)에 붙는다. E8a는 h_int 출력층을 0으로 초기화해서 초반에 gate가 예측 쪽 gradient를 전혀 받지 못한 것도 원인이다.
   2. h_int가 여분 용량으로 쓰인다: h_int도 z^c, action, 그리고 agent 위치가 담긴 z^u를 보므로, contact와 무관하게 예측을 조금씩 돕는다. ρ가 작으면 항상 여는 것이 이득이다.
 
 **남은 일과 다음 방향**
@@ -305,14 +404,14 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
   - **Contact 라벨 지도 gate (상한선)**: gate를 contact 라벨로 직접 학습한다. RQ2에는 답하지 못하지만, gate 구조가 Collision env의 예측과 planning을 얼마나 개선할 수 있는지(H1)의 상한을 보여 준다.
 - 분석 data(마지막 500 episode)는 학습 data에도 들어 있다(학습/검증 분할이 clip 단위다). 발표용 수치는 별도 평가 data로 다시 계산한다.
 
-**결과물:** checkpoint `gate_collision_n2/weights_epoch_{1..10}.pt`, `gate_diag/weights_epoch_1.pt`와 metrics(`/content/gate_collision_n2_metrics.csv`, `/content/gate_diag_metrics.csv`, `an_gate_main.csv`, `an_gate_diag.csv`)는 강연우의 Colab VM에만 있다. Proton Drive `results/E5_gate/`에 올려야 한다.
+**결과물:** Proton Drive `results/E8_gate/`에 `weights_epoch_10.pt`, `config.json`(E8a), `gate_collision_n2_metrics.csv`, `gate_diag_metrics.csv`가 있다. `gate_diag` checkpoint와 E8a의 epoch 1~9 checkpoint는 받지 않았다.
 
-## 2026-11-01~02 · E6. Gate 학습 신호 바꾸기(이득 기반, contact 지도)와 잔차 probe
+## 2026-11-01~02 · E9. Gate 학습 신호 바꾸기(이득 기반, contact 지도)와 잔차 probe
 
-**목적:** E5에서 sparsity 방식의 gate가 0이나 1에 포화하고 contact를 구분하지 못했다(AUROC 0.47 / 0.54). Gate의 학습 신호를 바꿔 contact 때만 열리는지, 열렸을 때 예측이 좋아지는지 확인한다. 같은 data로 학습한 CF-JEPA baseline도 만든다.
+**목적:** E8에서 sparsity 방식의 gate가 0이나 1에 포화하고 contact를 구분하지 못했다(AUROC 0.47 / 0.54). Gate의 학습 신호를 바꿔 contact 때만 열리는지, 열렸을 때 예측이 좋아지는지 확인한다. 같은 data로 학습한 CF-JEPA baseline도 만든다.
 
 **구현** (`src/iawm/cfjepa_gate.py`, `scripts/train.py`의 `[interaction gate]` 블록)
-- `predictor.gate_objective`: `sparsity`(E5), `gain`, `supervised`.
+- `predictor.gate_objective`: `sparsity`(E8), `gain`, `supervised`.
 - `gain`과 `supervised`에서는 gate를 BCE로만 학습한다. Gate 입력과, 예측에 쓰는 α를 detach한다. 그래서 예측 loss가 gate를 움직이지 않고, gate BCE가 encoder를 움직이지 않는다.
 - h_int는 α와 무관한 보조 loss(`int_aux_loss`, α=1 예측의 z^c 오차)로도 학습한다. Gate가 닫혀도 h_int가 계속 배운다.
 - Gate 목표값:
@@ -358,7 +457,7 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 
 - **AUROC(α → contact) = 0.899.** Contact 때 열리고 평소에는 닫힌다. 다만 라벨로 학습했으므로 RQ2의 답이 아니라 "스위치 구조가 가능하다"는 상한선이다.
 - **예측은 좋아지지 않았다.** Contact 구간 실제 오차 0.0348은 h_int를 끈 예측(0.0349)과 같다. α=1로 켜도 0.8%만 준다. Gate가 제대로 열려도, 열렸을 때 고칠 h_int가 contact 효과를 배우지 못했다.
-- Contact 구간 오차는 non-contact의 6.4배다(E5a의 6.6배와 같은 양상).
+- Contact 구간 오차는 non-contact의 6.4배다(E8a의 6.6배와 같은 양상).
 
 **잔차 probe: 병목은 latent의 obstacle 정보다** (`scripts/probe_residual.py`, `cfjepa_collision_n2/weights_epoch_10.pt` 고정)
 - 방법: clip의 마지막 position(history 3 frame을 모두 본 예측)에서 잔차 r = z^c_{t+1} − (CF-JEPA z^c 예측)을 구하고, 큰 MLP(hidden 512, early stopping)로 r을 맞힌다. Episode 기준 80/20 분할의 test에서 오차 감소율을 본다.
@@ -373,16 +472,16 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 | oracle | 0.206 (0.319) | 0.016 (0.098) | 0.417 (0.497) | **0.405** (0.451) |
 
 - 1,500 episode에서는 oracle도 contact 잔차를 맞히지 못했다(contact 학습 샘플 약 1,700개). 10,000 episode로 늘리니 oracle은 contact 잔차의 40%를 설명한다. 즉 contact 효과는 정확한 state가 있으면 예측할 수 있다.
-- **그런데 latent(zc+zu)로는 4.6%만 설명한다.** 충분한 data와 큰 MLP로도 이 정도이므로, h_int를 키워도 크게 나아지지 않는다. E5 probe에서 obstacle 위치가 R² 0.86~0.93(agent는 0.999)으로만 읽힌 것과 맞는다. "다음 5 step에 부딪혀 얼마나 밀릴지"를 계산하기에는 latent의 obstacle 위치가 너무 흐릿하다.
+- **그런데 latent(zc+zu)로는 4.6%만 설명한다.** 충분한 data와 큰 MLP로도 이 정도이므로, h_int를 키워도 크게 나아지지 않는다. E8 probe에서 obstacle 위치가 R² 0.86~0.93(agent는 0.999)으로만 읽힌 것과 맞는다. "다음 5 step에 부딪혀 얼마나 밀릴지"를 계산하기에는 latent의 obstacle 위치가 너무 흐릿하다.
 - Non-contact 잔차는 입력과 관계없이 25~40% 설명된다. g가 contact와 무관하게 underfit된 부분이 있고, h_int가 contact보다 non-contact를 더 도운 이유가 이것이다.
 
 **해석**
 - 병목은 gate(스위치)도 h_int의 크기도 아니라, encoder가 obstacle 위치·속도를 충분히 정밀하게 담지 않는 것이다.
-- 이득 기반 gate가 라벨 없이 열리려면 "켰을 때 contact에서만 크게 이득"이어야 하는데, 지금 latent에서는 그 이득 자체가 없다. 그래서 E5의 sparsity 방식, E6의 gain 방식이 모두 실패했다.
+- 이득 기반 gate가 라벨 없이 열리려면 "켰을 때 contact에서만 크게 이득"이어야 하는데, 지금 latent에서는 그 이득 자체가 없다. 그래서 E8의 sparsity 방식, E9의 gain 방식이 모두 실패했다.
 
 **남은 일**
 - Latent에 obstacle 정보를 정밀하게 담는 방법을 찾는다. 후보: z^u 차원 64 → 128, distractor 없이(N=0) 학습해 z^u 용량 경쟁 제거, h_int 보조 loss 비중 높이기, 여러 step 예측 loss. 2~3 epoch 학습 후 `probe_latent.py`, `probe_residual.py`의 `zc+zu` contact B가 4.6%에서 oracle(40%) 쪽으로 오르는지로 비교한다.
 - 그 뒤 h_int의 contact 이득이 커지면, 이득 기반 gate를 절대 이득 기준으로 다시 학습해 라벨 없이 AUROC 0.8 이상(H3)이 나오는지 본다. 이번 결과에서도 절대 이득의 AUROC(0.60)가 상대 이득(0.32~0.35)보다 나았다.
 - 아직 하지 않은 것: `cfjepa_collision_n2`의 `analyze_gate.py` 결과와 epoch별 loss, 모든 모델의 planning 성공률(`eval.py --config-name=collision_tworoom`, H1), Distractor env 평가(H2), seed 3개, 학습에 쓰지 않은 평가 data.
 
-**결과물:** checkpoint(`cfjepa_collision_n2/weights_epoch_10.pt`, `gate_sup_n2/weights_epoch_10.pt`, `gate_gain_n2/weights_epoch_6.pt`, 각 `config.json`)와 분석 CSV(`an_gate_main.csv`, `an_gate_diag.csv`, `an_gate_gain_e6.csv`, `an_gate_sup.csv`)를 Proton Drive `results/E6_gate_objectives/`에 올린다. E5 checkpoint(`gate_collision_n2/weights_epoch_10.pt`)와 metrics는 `results/E5_gate/`에 올린다. `gate_diag` checkpoint는 받지 않았다. Colab VM은 11/2 오전에 종료했다.
+**결과물:** Proton Drive `results/E9_gate_objectives/`에 checkpoint 3개(`cfjepa_collision_n2_weights_epoch_10.pt`, `gate_sup_n2_weights_epoch_10.pt`, `gate_gain_n2_weights_epoch_6.pt`)와 각 config, 분석 CSV(`an_gate_main.csv`, `an_gate_diag.csv`, `an_gate_gain_e6.csv`, `an_gate_sup.csv`)가 있다. Colab VM은 11/2 오전에 종료했다.

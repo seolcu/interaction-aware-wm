@@ -3,7 +3,7 @@
 _target_: iawm.cfjepa_gate.CFJEPA
 gate_sparsity_weight: 1e-4   # ρ. scripts/train.py가 읽는다. CFJEPA는 **kwargs로 받고 무시한다
 gate_sparsity_warmup_steps: 6600   # ρ를 0에서 선형으로 키우는 step 수 (Collision data 약 2 epoch)
-# 아래 셋은 predictor.gate_objective가 gain / supervised일 때만 쓴다 (E6)
+# 아래 셋은 predictor.gate_objective가 gain / supervised일 때만 쓴다 (E9)
 int_aux_weight: 1.0          # h_int 보조 loss (α=1 예측의 z^c 오차) 가중치
 gate_bce_weight: 1.0         # gate BCE 가중치
 gate_gain_threshold: 0.3     # gain: h_int로 z^c 오차가 이 비율 이상 줄면 gate 목표 = 1
@@ -32,7 +32,7 @@ predictor:
   int_scale: 1.0         # h_int 출력 bound: int_scale · tanh(·)
   gate_hidden_dim: 256
   gate_init_bias: 2.0    # 시작 α = σ(2) ≈ 0.88. 열린 상태로 시작해 h_int가 먼저 배우게 한다
-  gate_objective: sparsity   # sparsity (E5) | gain (BCE, 비지도) | supervised (BCE, contact 라벨.
+  gate_objective: sparsity   # sparsity (E8) | gain (BCE, 비지도) | supervised (BCE, contact 라벨.
                              # data=collision_tworoom_contact 필요)
   num_frames: ${history_size}
   dim_c: 128
