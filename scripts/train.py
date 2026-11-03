@@ -188,6 +188,33 @@ def world_model_forward(self, batch, stage, cfg):
     return output
 
 
+def build_optim(cfg):
+    """optimizer 설정. model.int_lr가 있으면 (E19) h_int, int_in, int_out, gate만 따로 그 lr로 학습한다.
+
+    stable-pretraining은 module 이름 regex로 optimizer를 나누고, 처음 맞는 regex가 이긴다.
+    자식 module은 부모를 따르지만 다른 regex가 직접 맞으면 그쪽으로 간다. 'model'은 모든 하위 이름에
+    맞으므로 int_opt의 regex가 하위 module까지 직접 맞도록 (\\.|$)로 끝낸다.
+    """
+    groups = {}
+    int_lr = cfg.model.get('int_lr', None)
+    if int_lr:
+        opt = dict(cfg.optimizer)
+        opt['lr'] = float(int_lr)
+        groups['int_opt'] = {
+            'modules': r'model\.predictor\.(h_int|int_in|int_out|gate)(\.|$)',
+            'optimizer': opt,
+            'scheduler': {'type': 'LinearWarmupCosineAnnealingLR'},
+            'interval': 'epoch',
+        }
+    groups['model_opt'] = {
+        'modules': 'model',
+        'optimizer': dict(cfg.optimizer),
+        'scheduler': {'type': 'LinearWarmupCosineAnnealingLR'},
+        'interval': 'epoch',
+    }
+    return groups
+
+
 @hydra.main(version_base=None, config_path='../configs/train', config_name='cfjepa')
 def run(cfg):
     with open_dict(cfg):
@@ -225,14 +252,7 @@ def run(cfg):
         model=world_model,
         sigreg=SIGReg(**cfg.loss.sigreg_kwargs),
         forward=partial(world_model_forward, cfg=cfg),
-        optim={
-            'model_opt': {
-                'modules': 'model',
-                'optimizer': dict(cfg.optimizer),
-                'scheduler': {'type': 'LinearWarmupCosineAnnealingLR'},
-                'interval': 'epoch',
-            },
-        },
+        optim=build_optim(cfg),
     )
 
     run_dir = Path(swm.data.utils.get_cache_dir(sub_folder='checkpoints'), cfg.output_model_name)
