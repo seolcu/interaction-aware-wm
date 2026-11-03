@@ -584,3 +584,70 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 **결정:** 2단계(E12)에는 E10 `lab2` 설정(full 입력, 라벨 2%)을 쓴다. 이 설정이 측정된 것 중 가장 좋았다. 또 h_int는 z^c와 z^u를 모두 입력으로 받으므로, obstacle 정보가 z^c에 들어가도 h_int가 쓸 수 있다. z^u 차원을 키우는 시도는 시간과 compute unit 때문에 뒤로 미룬다.
 
 **결과물:** Proton Drive `results/E11_encoder_fix/`에 두 모델의 `weights_epoch_3.pt`와 config, probe 출력이 있다.
+
+## 2026-11-03 · E12. Contact 보조 loss(라벨 2%)를 붙인 gate 모델 학습과 분석
+
+**목적:** E10 `lab2` encoder 수정(contact 보조 loss, full 입력, 라벨 2%)을 gate 모델에 붙여 다시 학습한다. 확인할 것은 두 가지다. 첫째, h_int의 contact 이득이 E9(0.4~0.8%)보다 커지는가. 둘째, 그 이득으로 이득 기반 gate가 라벨 없이 열리는가.
+
+**학습** (Colab A100 한 장에 두 학습, `outputs/e12/e12_pipeline.sh`)
+- 공통: `model=cfjepa_gate data=collision_tworoom_aux trainer.max_epochs=10 +model.contact_head=true +model.contact_aux_weight=1.0 +model.contact_aux_key=contact_next_p2`
+- `e12_sup`: `model.predictor.gate_objective=supervised`(gate 목표는 contact 라벨 100%. 보조 loss는 라벨 2%)
+- `e12_gain`: `model.predictor.gate_objective=gain model.gate_gain_threshold=0.1`(E9의 τ=0.3에서 낮췄다)
+- epoch당 약 47분(두 학습이 GPU를 나눠 씀).
+
+**세션 손실과 대응**
+- 학습 세션이 epoch 8 직후(11/3 08:30 무렵) 사라졌다. 가중치(`weights_epoch_8.pt`)만 로컬에 받아 두었고, 전체 checkpoint(optimizer 상태)는 받지 않았다. 그래서 이어서 학습할 수 없었고, 분석과 평가는 **epoch 8**로 했다.
+- 분석·평가용 세션도 두 번(11:20, 14:15 무렵) 사라졌다. 둘 다 Collision data(1만 episode, 약 1시간)를 수집하던 중이었다. 원인은 확인하지 못했다. "kernel이 쉬면 회수된다"는 가설은 맞지 않았다. 두 번째 세션은 로컬 감시 프로세스가 10분마다 kernel에 명령을 보내는 중에 사라졌다.
+- 세 번째 시도에서는 분석·평가용 data를 2,000 episode로 줄였다(`collect_collision.py --episodes 2000`, 약 11분). 분석과 평가에는 시작 위치와 정규화 통계만 필요하다. 수집 seed가 같아서, 학습 data의 일부와 겹친다. 잔차 probe(1만 episode 필요)는 하지 않았다. VM 메모리는 83GB 중 최대 6GB만 썼다.
+
+**분석** (`analyze_gate.py --distractors 2`, 2,000 episode data의 마지막 500 episode)
+
+| | `e12_sup` | `e12_gain` | E9 `gate_sup_n2` (참고) |
+|---|---|---|---|
+| α 평균 non-contact / contact | 0.108 / 0.518 | 1.1e-5 / 1.2e-5 | 0.094 / 0.514 |
+| AUROC(α → contact) | **0.905** | 0.533 | 0.899 |
+| h_int 상대 이득 non-contact / contact | 0.39% / **0.49%** | 0.41% / 0.23% | — / 0.8% |
+| AUROC(절대 이득 → contact) | 0.619 | 0.542 | — |
+| z^c 오차 contact / non-contact | 3.3배 | 2.7배 | 6.4배 |
+
+- **Contact 지도 gate는 E9와 같다.** Contact 때 열리지만(AUROC 0.905), 열어도 z^c 오차가 0.49%만 준다. Encoder 수정이 h_int의 contact 이득을 늘리지 못했다.
+- **이득 기반 gate는 계속 닫혀 있다.** τ=0.1에서도 목표가 1인 샘플이 거의 없어서(0.03%) gate가 0으로 collapse했다. 사후 분석에서는 τ를 0.02까지 낮춰도 목표=1 비율이 non-contact 10.9%, contact 5.1%로, 오히려 contact에서 더 낮다.
+- Contact/non-contact 오차 비가 E9보다 작다(3.3배 vs 6.4배). 다만 E12 분석은 distractor 2개를 덧그린 이미지에서 했기 때문에(E9는 distractor 없음) non-contact 오차가 커진 영향이 섞여 있다.
+
+**해석:** E10의 잔차 probe 개선(oracle 대비 30% → 44%)은 h_int의 실제 이득으로 이어지지 않았다. 분석 data와 학습 길이가 E10과 다르므로 직접 비교는 어렵다. 하지만 3 epoch에서 본 encoder 개선은 10 epoch 학습에서 유지되지 않았거나, h_int의 용량·학습 신호로는 쓸 수 없는 형태로 보인다.
+
+**결과물:** Proton Drive `results/E12_gate_aux/`에 두 모델의 `weights_epoch_8.pt`와 config, 분석 txt·csv가 있다.
+
+## 2026-11-03 · E13. Gate 모델의 planning 성공률 (H1 Collision env, H2 Distractor env)
+
+**목적:** gate가 실제 control 성공률을 올리는지 본다(H1). 또 Distractor env에서 CF-JEPA의 robustness를 유지하는지 본다(H2). 같은 모델에서 gate만 켜고 끄는 비교(`+gate_mode=off`, h_int를 끄고 g만 씀)를 하고, gate가 없는 원래 CF-JEPA(E9 `cfjepa_collision_n2`, epoch 10)도 함께 평가한다.
+
+**설정**
+- H1: `python scripts/eval.py --config-name=collision_tworoom policy=<ckpt> [+gate_mode=off] seed=<42|43|44>`. CEM 300×30, 50 episodes × seed 3개 = 150 episodes. 시작 상태와 goal은 E12의 2,000 episode data에서 뽑는다.
+- H2: `python scripts/eval.py policy=<ckpt> [+gate_mode=off] world.num_distractors=2`. Distractor TwoRoom, 50 episodes, seed 42. 모델은 모두 Collision data로 학습했다.
+- `scripts/eval.py`에 `+gate_mode` override를 더했다(learned | always | off). 3 episode로 먼저 확인했다.
+
+**결과** (success rate %)
+
+| 모델 | H1 s42 | s43 | s44 | **H1 평균** | **H2 N=2** |
+|---|---|---|---|---|---|
+| CF-JEPA (E9 `cfjepa_collision_n2`, gate 없음) | 96 | 88 | 90 | **91.3** | 84 |
+| `e12_sup`, gate learned | 94 | 90 | 90 | **91.3** | 94 |
+| `e12_sup`, gate off | 82 | 82 | 90 | 84.7 | 94 |
+| `e12_gain`, gate learned | 88 | 82 | 86 | 85.3 | 90 |
+| `e12_gain`, gate off | 84 | 86 | 92 | 87.3 | 92 |
+
+**해석**
+- **H1은 확인하지 못했다.** Gate 모델(`e12_sup`, 91.3%)은 gate 없는 CF-JEPA(91.3%)와 같다.
+  - `e12_sup`에서 gate를 끄면 84.7%로 떨어진다. 다만 h_int의 예측 이득이 0.5%뿐이라, 이 차이는 h_int가 contact 효과를 맞혀서 생긴 것이라고 보기 어렵다. 학습 중 g와 h_int가 함께 맞춰졌기 때문에, 하나를 빼면 예측이 흔들리는 효과일 가능성이 크다.
+  - 50 episodes의 표준오차는 약 ±4%p이고, seed 사이 차이도 최대 8%p다. 그래서 4~6%p 차이는 noise와 구분하기 어렵다.
+  - `e12_gain`은 α가 거의 0이라 켜도 꺼도 같아야 한다. 실제 차이(85.3% vs 87.3%)가 noise 수준을 보여 준다.
+- **현재 Collision env는 H1을 보이기에 너무 쉽다.** Obstacle을 모르는 CF-JEPA도 91%를 성공한다. 수집 통계(`collect.log`)로는 episode의 73%에서 contact가 일어나지만, 밀린 뒤에도 다시 계획하면 대부분 goal에 도달한다. 차이를 보려면 obstacle이 성공을 실제로 막는 환경이 필요하다. 예를 들어 obstacle 수를 늘리거나, push를 세게 하거나, 시간 제한을 짧게 할 수 있다.
+- **H2(robustness 유지)는 확인했다.** Gate 모델은 Distractor TwoRoom N=2에서 90~94%로, 같은 data로 학습한 CF-JEPA(84%)보다 낮지 않다. Contact 보조 loss와 gate를 붙여도 distractor robustness가 깨지지 않는다. 다만 seed 1개, 50 episodes다.
+
+**남은 일**
+- Obstacle이 성공을 좌우하도록 Collision env를 어렵게 만들고(교수님 질문인 obstacle 개수 늘리기와 연결), 같은 모델로 다시 평가한다.
+- h_int가 contact 효과를 실제로 배우게 하는 방법: distractor 없는 encoder(E10 `n0`)로 학습한 상한 실험, h_int 입력에 obstacle 위치를 직접 주는 oracle 실험, 여러 step 예측 loss.
+- Seed 반복과 episode 수 늘리기. 학습에 쓰지 않은 평가 data.
+
+**결과물:** Proton Drive `results/E13_gate_planning/`에 평가 log 21개와 `summary.txt`가 있다. Colab VM은 평가 직후 종료했다.
