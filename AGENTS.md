@@ -152,12 +152,13 @@ This file provides guidance to AI agents when working with code in this reposito
 
 - **팀 공유 폴더 (Proton Drive):** `/my-files/문서/interaction-aware-wm` (설규원 계정, 링크 공유)
   - git에 넣기 애매한 파일(영상, 그림, 결과 파일, 발표 자료)은 여기에 둔다. 코드와 실험 일지는 GitHub에 둔다.
-  - 현재 내용: `README.txt`(폴더 안내), `results/E0_lewm_tworoom_baseline`, `results/E1_collision_tworoom`, `results/E2_oracle`, `인공지능_17팀_발표자료.pptx`.
+  - 현재 내용: `README.txt`(폴더 안내), `results/E0_lewm_tworoom_baseline`, `results/E1_collision_tworoom`, `results/E2_oracle`, `발표자료/`(프로포절, 중간 발표 PDF와 PPTX).
   - 로컬에 Proton Drive CLI(`proton-drive`, `~/.local/bin`)가 있으면 그것을 쓴다.
     - 목록: `proton-drive filesystem list <path>`
     - 내려받기: `proton-drive filesystem download <path>... <localFolder>`
     - 올리기: `proton-drive filesystem upload <localPath>... <parentPath>`
-- **프로포절 발표 자료:** 공유 폴더의 `인공지능_17팀_발표자료.pptx` (팀원 제작, 10/12 발표에 사용, 9장)
+- **프로포절 발표 자료:** 공유 폴더의 `발표자료/프로포절_1012.pptx` (팀원 제작, 10/12 발표에 사용, 9장)
+- **중간 발표 자료 (11/5):** 공유 폴더의 `발표자료/중간발표_1105_초안A`, `초안B` (.pdf, .pptx). 원본은 claude.ai Slides artifact 두 개다(초안 A https://claude.ai/artifact/FazKjAFMeGhNYx1Ko8yk1c, 초안 B https://claude.ai/artifact/AwF518RSccJqVhEbPXf8RU). 덱을 고치면 artifact의 내보내기(PDF, PowerPoint current fonts)로 받아 같은 이름으로 새 revision을 올린다.
   - 구성: 표지 / Topic / Motivation / Objectives / Background(CF-JEPA, TwoRoom 0.87·0.95 / 0.33·0.95, §V 인용) / Related Works / Proposed Method / Baseline Reproduction(LeWM 0.86) / Collision TwoRoom(seed 0~3 frame, "추후: 충돌·비충돌 구간의 예측 오차와 α_t 비교").
   - 슬라이드 글자가 모두 이미지라 python-pptx로는 텍스트가 나오지 않는다. `soffice --headless --convert-to pdf`로 바꿔서 본다.
   - E2 oracle 실험은 분량 때문에 일부러 넣지 않았다. 중간 발표에서 활용한다.
