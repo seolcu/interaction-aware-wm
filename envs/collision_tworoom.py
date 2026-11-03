@@ -30,6 +30,7 @@ class CollisionTwoRoomEnv(TwoRoomEnv):
         obstacle_radius: float = 14.0,
         obstacle_speed: tuple[float, float] = (3.0, 6.0),
         spawn_mode: str = 'crossing',
+        obstacle_info: str = 'all',
         **kwargs,
     ):
         assert spawn_mode in ('crossing', 'random')
@@ -37,6 +38,10 @@ class CollisionTwoRoomEnv(TwoRoomEnv):
         self.obstacle_radius = float(obstacle_radius)
         self.obstacle_speed = tuple(float(s) for s in obstacle_speed)
         self.spawn_mode = spawn_mode
+        # 'first': info에 첫 obstacle만 넣는다. 평가 pipeline은 info buffer를 dataset(obstacle 1개)
+        # 모양으로 잡아서, obstacle이 여러 개면 shape가 맞지 않는다(E14).
+        assert obstacle_info in ('all', 'first')
+        self.obstacle_info = obstacle_info
         self.obstacle_pos = torch.zeros((0, 2), dtype=torch.float32)
         self.obstacle_vel = torch.zeros((0, 2), dtype=torch.float32)
         self.contact = False
@@ -187,8 +192,9 @@ class CollisionTwoRoomEnv(TwoRoomEnv):
 
     def _get_info(self):
         info = super()._get_info()
-        info['obstacle_pos'] = self.obstacle_pos.detach().cpu().numpy().copy()
-        info['obstacle_vel'] = self.obstacle_vel.detach().cpu().numpy().copy()
+        k = 1 if self.obstacle_info == 'first' else None
+        info['obstacle_pos'] = self.obstacle_pos[:k].detach().cpu().numpy().copy()
+        info['obstacle_vel'] = self.obstacle_vel[:k].detach().cpu().numpy().copy()
         info['contact'] = bool(self.contact)
         info['pinned'] = bool(self.pinned)
         return info

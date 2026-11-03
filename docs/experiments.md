@@ -651,3 +651,34 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 - Seed 반복과 episode 수 늘리기. 학습에 쓰지 않은 평가 data.
 
 **결과물:** Proton Drive `results/E13_gate_planning/`에 평가 log 21개와 `summary.txt`가 있다. Colab VM은 평가 직후 종료했다.
+
+## 2026-11-03 · E14. 어려운 Collision env 조건에서 기존 모델 평가 (재학습 없음)
+
+**목적:** E13에서 obstacle 1개 Collision env는 obstacle을 모르는 CF-JEPA도 91%를 성공해, gate 효과(H1)를 볼 여지가 없었다. 학습 없이 평가 조건만 어렵게 해서 두 가지를 본다. 첫째, CF-JEPA가 무너지는가(독립 가정이 깨지는 상황의 정량화). 둘째, gate 모델이 버티는가. 교수님의 "obstacle이 많아지면?" 질문에 대한 첫 실험이기도 하다.
+
+**설정**
+- 모델: E9 `cfjepa_collision_n2`(epoch 10), E12 `e12_sup`(gate learned / off), `e12_gain`(epoch 8). 모두 obstacle 1개 data로 학습했다.
+- 조건(`--config-name=collision_tworoom`, 50 episodes × seed 42, 43):
+  - `c3`: `world.num_obstacles=3`
+  - `c3b`: `c3` + `eval.eval_budget=30`(기본 50)
+  - `c2f`: `world.num_obstacles=2 +world.obstacle_speed=[6.0,10.0]`(기본 3~6px/step)
+- 시작 상태와 goal은 obstacle 1개 data(2,000 episode)에서 뽑는다. Obstacle은 env가 reset 때 agent→goal 경로를 가로지르게 놓는다(`spawn_mode=crossing`).
+- 수정: 평가 pipeline이 info buffer를 dataset 모양(obstacle 1개)으로 잡아서, obstacle이 여러 개면 shape 오류가 났다. `envs/collision_tworoom.py`에 `obstacle_info='first'`(info에 첫 obstacle만) 옵션을 더해 `+world.obstacle_info=first`로 평가한다.
+
+**결과** (success rate %, seed 2개 평균. 기본 조건은 E13의 seed 3개 평균)
+
+| 조건 | CF-JEPA | `e12_sup` learned | `e12_sup` off | `e12_gain` |
+|---|---|---|---|---|
+| 기본 (obstacle 1개) | 91.3 | 91.3 | 84.7 | 85.3 |
+| `c3` obstacle 3개 | 73.0 | 71.0 | 75.0 | 69.0 |
+| `c3b` 3개 + budget 30 | **65.0** | 66.0 | 69.0 | 67.0 |
+| `c2f` 2개 + 빠름 | 73.0 | 82.0 | 82.0 | 82.0 |
+
+**해석**
+- **Obstacle이 많아지면 CF-JEPA가 떨어진다**(91% → 73%, 시간 제한까지 두면 65%). CF-JEPA가 §V에 적은 독립 가정의 한계를 처음으로 수치로 보였다. 다만 obstacle 1개 data로 학습한 모델이라 분포 밖 조건이라는 점도 섞여 있다.
+- **Gate는 차이를 만들지 못했다.** 모든 조건에서 gate learned와 off가 noise 범위(100 episodes에서 표준오차 약 ±4.5%p) 안에 있다. E12에서 h_int의 예측 이득이 0.5%였던 것과 맞는다.
+- `c2f`에서 E12 모델 셋이 모두 82%로 CF-JEPA(73%)보다 높다. Gate를 꺼도 같으므로 gate 효과가 아니다. contact 보조 loss를 붙인 encoder 쪽 차이로 보이지만, seed 2개라 확정할 수 없다.
+
+**다음 (E15):** obstacle 3개 data로 학습해 contact가 잦게 하고, distractor 없이 학습해 encoder가 obstacle을 정밀하게 담게 한다(E10 `n0`에서 oracle 대비 99%). 이 조건에서 contact 지도 gate와 CF-JEPA를 다시 비교한다.
+
+**결과물:** Proton Drive `results/E14_hard_collision/`에 평가 log와 `status.txt`가 있다. 실행 script는 `outputs/e14/e14_pipeline.sh`(git 제외)이다.
