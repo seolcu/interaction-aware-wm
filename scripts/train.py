@@ -74,6 +74,10 @@ def world_model_forward(self, batch, stage, cfg):
     emb = output['emb']  # (B, T, D)
     act_emb = output['act_emb']
 
+    # [oracle h_int] E16 진단: predictor.int_oracle_dim > 0이면 정답 state를 h_int 입력으로 넘긴다.
+    pr_ = getattr(self.model, 'predictor', None)
+    if getattr(pr_, 'int_oracle_dim', 0) > 0:
+        pr_.oracle = torch.nan_to_num(batch['oracle_state'].float(), 0.0)
     pred_emb = self.model.predict(emb[:, :ctx_len], act_emb[:, :ctx_len])
     tgt_emb = emb[:, n_preds:]
 

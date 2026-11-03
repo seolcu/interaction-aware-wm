@@ -1,0 +1,17 @@
+# Collision TwoRoom + contact 라벨 + 정답 state (E16 oracle h_int 진단).
+# scripts/add_oracle_state.py가 collision_tworoom_contact.h5에 oracle_state column을 더한다.
+# train.py가 이 column도 z-score 정규화한다.
+dataset:
+  num_steps: 4      # history_size + num_preds
+  frameskip: 5
+  name: collision_tworoom_contact.h5
+  keys_to_load:
+    - pixels
+    - action
+    - proprio
+    - contact_next
+    - oracle_state
+  keys_to_cache:
+    - action
+    - proprio
+    - oracle_state

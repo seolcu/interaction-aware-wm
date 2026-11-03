@@ -44,8 +44,9 @@ def clip_rows(f, episodes, act_mean, act_std):
         act = np.nan_to_num((f['action'][o:o + L].astype(np.float32) - act_mean) / act_std, nan=0.0)
         con = f['contact'][o:o + L].astype(bool)
         ag = agent_pos(f, o, L)
-        obs = f['obstacle_pos'][o:o + L].reshape(L, -1)[:, :2].astype(np.float32)
-        vel = f['obstacle_vel'][o:o + L].reshape(L, -1)[:, :2].astype(np.float32)
+        # obstacle 전부 (E16 수정: 예전에는 첫 obstacle만 썼다. obstacle이 여러 개인 data(E15)에서 oracle이 약했던 원인)
+        obs = f['obstacle_pos'][o:o + L].reshape(L, -1).astype(np.float32)
+        vel = f['obstacle_vel'][o:o + L].reshape(L, -1).astype(np.float32)
         starts = np.arange(0, L - span + 1, FS)
         fr = starts[:, None] + FS * np.arange(NUM_STEPS)[None]           # frame rows
         t = fr[:, HIST - 1]                                              # 마지막 입력 frame row

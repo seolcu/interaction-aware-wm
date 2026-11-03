@@ -226,6 +226,7 @@ class InteractionGatedPredictor(FactorizedPredictor):
         gate_hidden_dim: int = 256,
         gate_init_bias: float = 0.0,
         gate_objective: str = 'sparsity',
+        int_oracle_dim: int = 0,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -242,7 +243,12 @@ class InteractionGatedPredictor(FactorizedPredictor):
 
         # LeWM Transformer의 cond_proj는 input_dim -> hidden_dim이라 action embedding 차원
         # (dim_c = 128)과 입력 차원이 같아야 한다. 그래서 [z^c, z^u]를 먼저 dim_c로 사영한다.
-        self.int_in = nn.Linear(d_c + d_u, d_c)
+        # int_oracle_dim > 0 (E16 진단): h_int 입력에 정답 state(agent·obstacle 위치·속도)를 덧붙인다.
+        # 학습 전에 train.py가 `self.oracle` (B, T, int_oracle_dim)을 채운다. planning 때는 미래 state를
+        # 알 수 없으므로 이 설정은 예측 오차 진단 전용이다(oracle이 없으면 0으로 채운다).
+        self.int_oracle_dim = int_oracle_dim
+        self.oracle: torch.Tensor | None = None
+        self.int_in = nn.Linear(d_c + d_u + int_oracle_dim, d_c)
         self.h_int = Predictor(
             num_frames=self.num_frames,
             input_dim=d_c,
@@ -281,7 +287,14 @@ class InteractionGatedPredictor(FactorizedPredictor):
         else:
             alpha = z_c.new_ones(*z_c.shape[:2], 1)
             self.last_logit = None
-        x = self.int_in(torch.cat([z_c, z_u], dim=-1))
+        parts = [z_c, z_u]
+        if self.int_oracle_dim > 0:
+            T = z_c.size(1)
+            if self.oracle is not None:
+                parts.append(self.oracle[:, :T].to(z_c.dtype))
+            else:
+                parts.append(z_c.new_zeros(*z_c.shape[:2], self.int_oracle_dim))
+        x = self.int_in(torch.cat(parts, dim=-1))
         delta = self.int_scale * torch.tanh(self.int_out(self.h_int(x, act_emb)))
         self.last_delta = delta
         alpha_used = alpha.detach() if self.gate_isolated else alpha

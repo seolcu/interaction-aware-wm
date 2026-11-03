@@ -50,7 +50,7 @@ def action_stats(f):
     return a.mean(0), a.std(0, ddof=1)
 
 
-def iter_clips(f, episodes, num_steps=4, frameskip=5, clip_stride=5, act_mean=None, act_std=None):
+def iter_clips(f, episodes, num_steps=4, frameskip=5, clip_stride=5, act_mean=None, act_std=None, oracle=None):
     """episode마다 clip을 만든다. 반환: pixels (C, num_steps, 3, H, W) uint8, action (C, num_steps, fs*2),
     contact (C, num_steps-1) bool, episode index."""
     off, ep_len = episode_offsets(f)
@@ -72,7 +72,8 @@ def iter_clips(f, episodes, num_steps=4, frameskip=5, clip_stride=5, act_mean=No
                       for k in range(num_steps - 1)])
             for s in starts
         ])
-        yield px[idx_px], act[idx_act].reshape(len(starts), num_steps, -1), labels, ep
+        orc = oracle[o:o + L][idx_px] if oracle is not None else None
+        yield px[idx_px], act[idx_act].reshape(len(starts), num_steps, -1), labels, ep, orc
 
 
 def to_model_pixels(px_uint8, device):
@@ -89,6 +90,13 @@ def run(model, f, episodes, device, batch=128, distractors=0, frameskip=5, histo
     act_mean, act_std = action_stats(f)
     dim_c = getattr(model, 'dim_c', None)
     has_gate = hasattr(model.predictor, 'last_alpha')
+    # E16: oracle h_int 모델이면 정답 state column을 학습 때처럼 z-score 정규화해 넘긴다
+    oracle = None
+    if getattr(model.predictor, 'int_oracle_dim', 0) > 0:
+        o_all = f['oracle_state'][:].astype(np.float64)
+        ok = o_all[~np.isnan(o_all).any(axis=1)]
+        oracle = np.nan_to_num(((o_all - ok.mean(0)) / ok.std(0, ddof=1)).astype(np.float32), nan=0.0)
+    buf_orc = []
     rows = {'ep': [], 'pos': [], 'contact': [], 'err_c': [], 'err_all': [], 'alpha': [],
             'err_c_off': [], 'err_c_on': []}
     buf_px, buf_act, buf_lab, buf_ep = [], [], [], []
@@ -100,7 +108,8 @@ def run(model, f, episodes, device, batch=128, distractors=0, frameskip=5, histo
         act = torch.from_numpy(np.concatenate(buf_act)).to(device)
         lab = np.concatenate(buf_lab)
         eps = np.concatenate(buf_ep)
-        buf_px.clear(), buf_act.clear(), buf_lab.clear(), buf_ep.clear()
+        orc_all = np.concatenate(buf_orc) if oracle is not None else None
+        buf_px.clear(), buf_act.clear(), buf_lab.clear(), buf_ep.clear(), buf_orc.clear()
         for i in range(0, len(px), batch):
             pixels = to_model_pixels(px[i:i + batch], device)
             if distractors > 0:
@@ -111,6 +120,8 @@ def run(model, f, episodes, device, batch=128, distractors=0, frameskip=5, histo
                 pixels = overlay(pixels, params, t, dcfg, IMAGENET_MEAN.view(1, 3), IMAGENET_STD.view(1, 3))
             out = model.encode({'pixels': pixels, 'action': act[i:i + batch]})
             emb, act_emb = out['emb'], out['act_emb']
+            if oracle is not None:
+                model.predictor.oracle = torch.from_numpy(orc_all[i:i + batch]).to(device)
             pred = model.predict(emb[:, :history], act_emb[:, :history])
             tgt = emb[:, 1:history + 1]
             diff = (pred - tgt).float().pow(2)
@@ -136,8 +147,10 @@ def run(model, f, episodes, device, batch=128, distractors=0, frameskip=5, histo
             rows['err_c_on'].append(err_on.cpu().numpy().reshape(-1))
 
     n_buf = 0
-    for px, act, lab, ep in iter_clips(f, episodes, history + 1, frameskip, frameskip, act_mean, act_std):
+    for px, act, lab, ep, orc in iter_clips(f, episodes, history + 1, frameskip, frameskip, act_mean, act_std, oracle):
         buf_px.append(px), buf_act.append(act), buf_lab.append(lab), buf_ep.append(np.full(len(px), ep))
+        if orc is not None:
+            buf_orc.append(orc)
         n_buf += len(px)
         if n_buf >= 4 * batch:
             flush()
