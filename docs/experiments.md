@@ -682,3 +682,60 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 **다음 (E15):** obstacle 3개 data로 학습해 contact가 잦게 하고, distractor 없이 학습해 encoder가 obstacle을 정밀하게 담게 한다(E10 `n0`에서 oracle 대비 99%). 이 조건에서 contact 지도 gate와 CF-JEPA를 다시 비교한다.
 
 **결과물:** Proton Drive `results/E14_hard_collision/`에 평가 log와 `status.txt`가 있다. 실행 script는 `outputs/e14/e14_pipeline.sh`(git 제외)이다.
+
+## 2026-11-03 · E15. obstacle 3개 data, distractor 없이 학습한 CF-JEPA와 contact 지도 gate
+
+**목적:** E10에서 distractor 없이 학습하면 latent가 obstacle 정보를 oracle만큼 담았다(oracle 대비 99%). E14에서는 obstacle이 많을수록 CF-JEPA가 떨어졌다. 그래서 다음 조건에서 gate가 효과를 내는지 본다. 학습은 obstacle 3개 data로 해서 contact가 잦게 하고, encoder가 obstacle 정보를 담을 수 있게 distractor 없이 한다.
+
+**Data**
+- `python scripts/collect_collision.py --episodes 5000 --num-obstacles 3 --name collision3` (약 34분)
+- `add_contact_labels.py --data collision3_contact.h5`
+- 통계: contact step 비율 16.5%(E4는 7.3%), contact_next 31.1%, contact가 한 번 이상 있는 episode 92.5%
+
+**학습** (Colab A100 한 장에 두 학습, 10 epoch, epoch당 약 23분, 실행 script는 `outputs/e15/e15_pipeline.sh`)
+- 공통: `data=collision_tworoom_contact data.dataset.name=collision3_contact.h5 distractor.num=0 trainer.max_epochs=10`
+- `e15_cf`: `model=cfjepa`
+- `e15_sup`: `model=cfjepa_gate model.predictor.gate_objective=supervised` (contact 보조 loss 없음)
+- 세션 손실에 대비해 epoch마다 전체 checkpoint(optimizer 상태 포함)를 로컬로 받았다(`outputs/e15/sync.sh`). 이번에는 세션이 끊기지 않았다.
+
+**Planning 평가** (`--config-name=collision_tworoom +world.obstacle_info=first eval.dataset_name=collision3 world.num_obstacles=3`, 50 episodes × seed 42/43/44)
+
+| 모델 | obstacle 3개 | 평균 | 3개 + budget 30 | 평균 |
+|---|---|---|---|---|
+| `e15_cf` (CF-JEPA) | 76 / 82 / 76 | 78.0 | 60 / 60 / 62 | 60.7 |
+| `e15_sup` gate learned | 84 / 78 / 80 | **80.7** | 66 / 62 / 50 | 59.3 |
+| `e15_sup` gate off | 74 / 66 / 80 | 73.3 | 66 / 56 / 58 | 60.0 |
+| `e15_sup` gate always (α=1, ablation) | 82 / 68 / 78 | 76.0 | 68 / 66 / 58 | 64.0 |
+
+- 평가 data의 시작 상태는 학습 data(seed 3072)에서 뽑으므로 학습에 쓴 episode와 겹친다.
+- 평가 전에 `obstacle_info=first`와 `all`을 epoch 7 checkpoint로 2 episode씩 시험했고, 둘 다 오류 없이 돌았다.
+
+**Gate 분석** (`analyze_gate.py --data collision3.h5 --episodes 500`, distractor 없음)
+
+| | `e15_sup` | E12 `e12_sup` (참고) |
+|---|---|---|
+| α 평균 non-contact / contact | 0.180 / 0.747 | 0.108 / 0.518 |
+| AUROC(α → contact) | **0.937** | 0.905 |
+| h_int 상대 이득 non-contact / contact | 0.51% / **0.68%** | 0.39% / 0.49% |
+| z^c 오차 contact (CF-JEPA `e15_cf`) | 0.173 (0.160) | 0.082 |
+
+**잔차 probe** (`probe_residual.py --data collision3.h5 --episodes 5000`, contact 구간 B)
+
+| 모델 | zc | zc+zu | oracle |
+|---|---|---|---|
+| `e15_sup` | 0.051 | 0.062 | 0.043 |
+| `e15_cf` | 0.022 | 0.027 | 0.018 |
+
+- obstacle 3개 data에서는 oracle(정답 obstacle 위치, 속도)로도 contact 잔차를 2~4%밖에 설명하지 못한다. E9, E10의 obstacle 1개 data(40~50%)와 비교할 수 없다. 원인은 확인하지 않았다. probe 입력이 obstacle 3개와 그 상호작용을 다 담기에 부족하거나, 잔차가 contact 외의 오차로 채워졌을 가능성이 있다.
+
+**해석**
+- **H1은 이번에도 확인하지 못했다.** obstacle 3개 조건에서 gate learned(80.7%)가 CF-JEPA(78.0%)보다 2.7%p 높지만, 150 episodes의 표준오차(약 ±3.3%p) 안이다. 시간 제한 조건에서는 차이가 없다.
+- gate learned는 같은 모델의 gate off보다 7.3%p 높다. 하지만 α=1로 항상 켜도 76.0%이고, h_int의 예측 이득은 0.68%뿐이다. 그래서 E13에서처럼 h_int가 충돌 효과를 맞혀서 생긴 차이라기보다, g와 h_int를 함께 학습해서 생긴 의존성일 가능성이 크다.
+- **distractor를 없애도 h_int 이득은 0.5%에서 0.68%로 거의 그대로다.** 3 epoch probe(E10)에서 본 "distractor 없으면 latent에 obstacle 정보가 남는다"는 결과가 h_int의 이득으로 이어지지 않았다. 이제 병목은 encoder만이 아니다. h_int의 학습 신호와 용량, 또는 충돌 효과 자체를 예측하기 어려운 점을 의심한다. obstacle 3개 data에서는 oracle도 contact 잔차를 거의 설명하지 못했다.
+- gate의 충돌 판별은 더 좋아졌다(AUROC 0.937).
+
+**남은 일**
+- h_int의 예측 이득이 왜 작은지 따로 본다. 후보: oracle state를 h_int에 직접 넣는 상한 실험, h_int 용량 키우기, 여러 step 예측 loss.
+- obstacle 1개 data에서 distractor 없이 10 epoch 학습한 gate(E10 `n0`의 10 epoch 버전)로 같은 분석을 한다.
+
+**결과물:** Proton Drive `results/E15_obstacle3_nodistractor/`에 두 모델의 `weights_epoch_10.pt`와 config, 평가 log, 분석 txt와 csv가 있다. Colab VM은 분석 직후 종료했다.

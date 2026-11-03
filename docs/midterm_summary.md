@@ -53,13 +53,20 @@ CF-JEPA를 직접 재구현해 기존 benchmark 두 개(TwoRoom, PushT)에서 �
 
 - **Obstacle이 많아질수록 CF-JEPA가 떨어진다.** CF-JEPA 저자가 §V에 적은 한계가 실제로 성능 저하로 나타난다는 것을 처음으로 수치로 보였다.
 - 현재 gate는 obstacle이 많아져도 차이를 만들지 못한다. Gate가 켜져도 h_int가 충돌 효과를 배우지 못했기 때문이다(3장 5단계).
-- 진행 중(E15): obstacle 3개 data로, distractor 없이(4단계에서 encoder가 obstacle을 가장 잘 담은 조건) CF-JEPA와 gate를 다시 학습해 비교한다. 결과가 나오면 이 절을 갱신한다.
+- E15: obstacle 3개 data로, distractor 없이(4단계에서 encoder가 obstacle을 가장 잘 담은 조건) CF-JEPA와 gate를 10 epoch 다시 학습했다(평가 150 episodes).
+
+| 평가 조건 | CF-JEPA | Gate 모델 (gate 켬) | 같은 모델 gate 끔 |
+|---|---|---|---|
+| Obstacle 3개 | 78.0 | 80.7 | 73.3 |
+| Obstacle 3개 + 시간 제한 | 60.7 | 59.3 | 60.0 |
+
+- Gate는 충돌 순간을 더 정확히 판별했지만(AUROC 0.94), 켰을 때 예측 오차 감소는 0.7%로 거의 그대로였다. CF-JEPA 대비 2.7%p 차이는 오차 범위(약 ±3.3%p) 안이다. distractor를 없애는 것만으로는 h_int가 충돌 효과를 배우지 못했다.
 
 ## 5. 배운 것과 최종 발표까지 할 일
 
 - **배운 것:** gate라는 "스위치"는 쉽게 학습된다. 어려운 것은 스위치가 켜졌을 때 쓸 정보, 즉 obstacle의 정확한 위치와 속도를 encoder가 latent에 담게 하는 것이다. 예측 loss만으로는 이 정보가 학습 중에 점점 사라진다(3 epoch 30% → 10 epoch 11%).
 - **최종 발표까지:**
-  - Encoder가 obstacle을 담는 조건에서 gate가 성공률을 올리는지 확인(E15)
+  - h_int의 예측 이득이 작은 원인 확인(정답 obstacle 상태를 h_int에 직접 넣는 상한 실험, h_int 용량)
   - Obstacle 개수별 성능 곡선(1~5개)
   - Seed 3개 반복과 평가 episode 늘리기
 
