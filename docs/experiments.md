@@ -739,3 +739,47 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 - obstacle 1개 data에서 distractor 없이 10 epoch 학습한 gate(E10 `n0`의 10 epoch 버전)로 같은 분석을 한다.
 
 **결과물:** Proton Drive `results/E15_obstacle3_nodistractor/`에 두 모델의 `weights_epoch_10.pt`와 config, 평가 log, 분석 txt와 csv가 있다. Colab VM은 분석 직후 종료했다.
+
+## 2026-11-04 · E17. obstacle 개수(1~5개)에 따른 planning 성공률 (강연우)
+
+**목적:** 프로포절 때 받은 "obstacle이 많아지면 어떻게 되는가" 질문에 답한다. obstacle 1개로 학습한 모델을 obstacle 1~5개 환경에서 평가한다.
+
+**설정**
+- 모델: E12 `e12_sup`(gate) epoch 8과 같은 조건의 CF-JEPA. 둘 다 obstacle 1개 data로 학습했다.
+- 2, 4, 5개는 새로 평가했다(seed 42, 43, seed당 50 episodes). 1개는 E13, 3개는 E14 값을 그대로 쓴다.
+- 코드는 `yeonwoo/midterm-figs` branch의 `scripts/colab/eval_obstacle_sweep.sh`, `scripts/plot_obstacle_sweep.py`다(main에는 아직 합치지 않았다).
+
+**결과** (성공률 %, 표준오차 약 ±4~5%p)
+
+| obstacle 수 | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| CF-JEPA | 91.3 | 78.0 | 73.0 | 73.0 | 66.0 |
+| gate | 91.3 | 77.0 | 71.0 | 68.0 | 68.0 |
+
+- seed별 값: 2개 CF-JEPA 80 / 76, gate 80 / 74. 4개 CF-JEPA 72 / 74, gate 72 / 64. 5개 CF-JEPA 70 / 62, gate 68 / 68.
+
+**해석**
+- obstacle이 늘수록 두 모델 모두 떨어진다(1개에서 5개로 약 −25%p). CF-JEPA의 독립 가정이 obstacle 수가 늘 때 성능 저하로 나타난다.
+- 두 모델의 차이는 모든 점에서 오차 범위 안이다. 같은 조건에서도 seed에 따라 최대 8%p 차이가 난다.
+- 학습은 obstacle 1개로만 했으므로, 하락에는 "학습 때 못 본 상황"의 영향도 섞여 있다. 이를 나누려면 여러 obstacle data로 학습해야 한다(E15가 3개로 학습한 경우다).
+
+**결과물:** Proton Drive `발표자료/midterm_figs/`의 `obstacle_sweep.png`, `.svg`, `.csv`, `obstacle_sweep_summary.txt`. 중간 발표 덱 6페이지에 넣었다.
+
+## 2026-11-04 · E18. Planning 중 gate α_t 시각화 (강연우)
+
+**목적:** 실제 planning에서 gate가 충돌 순간에 켜지는지 영상으로 확인한다(demo).
+
+**설정**
+- 모델: E12 `e12_sup` epoch 8, Collision TwoRoom obstacle 1개, seed 42, 16 episodes.
+- 코드는 `yeonwoo/midterm-figs` branch의 `scripts/record_gate_rollout.py`다. 화면 아래에 α_t 선과 실제 contact 구간(띠)을 함께 그린다.
+
+**결과**
+- 성공률 87.5%(16 episodes).
+- α가 계산된 197 step에서 contact_next 비율 12.2%. α 평균 non-contact / contact = 0.156 / 0.494, AUROC 0.874.
+- episode 2: obstacle과 세 번 충돌하고, 충돌마다 α가 0.70~0.79로 올라갔다가 멀어지면 0.03~0.09로 내려간다. 발표 영상으로 쓴다.
+- episode 15: 충돌이 끝난 뒤에도 agent가 바로 옆에 있는 3 step 동안 α가 0.66~0.77로 남는다. 실제 접촉보다 "아주 가까움"에 반응하는 것으로 보인다.
+- episode 0은 충돌 직후에 α가 켜져 타이밍이 늦고, episode 5는 충돌이 α 계산 시작(t=10) 전에 일어나 확인할 수 없다.
+
+**해석:** E12 분석(AUROC 0.905)과 같은 결론이다. gate는 충돌 순간을 알아차리지만, 켜졌을 때의 h_int 예측 이득은 0.5% 수준이라 성공률은 CF-JEPA와 같다.
+
+**결과물:** Proton Drive `발표자료/midterm_figs/`의 `gate_env{0,2,5,15}.gif`, `.png`, `steps.csv`, `summary.txt`, `arrange.txt`. 중간 발표 덱 8페이지에 넣었다.
