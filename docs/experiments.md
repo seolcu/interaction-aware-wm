@@ -740,6 +740,39 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 
 **결과물:** Proton Drive `results/E15_obstacle3_nodistractor/`에 두 모델의 `weights_epoch_10.pt`와 config, 평가 log, 분석 txt와 csv가 있다. Colab VM은 분석 직후 종료했다.
 
+## 2026-11-04 · E16. h_int에 정답 state를 넣은 상한 실험 (oracle h_int)
+
+**목적:** E15까지 h_int의 예측 이득이 1% 아래였다. 원인이 "latent에서 obstacle 정보를 꺼내지 못해서"인지, "h_int 자체가 충돌 효과를 배우지 못해서"인지 나눈다. h_int 입력에 정답 state를 직접 넣고 이득이 커지는지 본다.
+
+**설정**
+- 코드: `InteractionGatedPredictor`에 `int_oracle_dim` 추가. h_int 입력이 `[z^c, z^u, oracle]`이 된다. oracle은 frame마다 agent 위치(2), obstacle 위치(2), 속도(2), obstacle − agent(2)의 8차원이고 z-score 정규화한다(`scripts/add_oracle_state.py`, `configs/train/data/collision_tworoom_oracle.yaml`). planning에서는 미래 state를 모르므로 진단 전용이다.
+- data: Collision TwoRoom obstacle 1개, 1만 episode 새로 수집. distractor N=2.
+- 두 모델 모두 supervised gate(E9), 4 epoch, A100에서 동시에 학습했다(epoch당 약 30분).
+  - `e16_oracle`: `+model.predictor.int_oracle_dim=8`
+  - `e16_base`: 같은 설정, oracle 없음
+- 분석: `analyze_gate.py --episodes 500 --distractors 2` (oracle 모델은 oracle을 함께 넣는다).
+- 학습을 마친 세션이 분석 전에 끊겼다. pipeline의 `wait`가 메모리 기록용 반복 작업까지 기다려서 분석이 시작되지 않은 사이였다. epoch별 weights는 받아 두었으므로 새 세션(E19)에서 data를 다시 모아 분석했다.
+
+**결과**
+
+| | `e16_oracle` | `e16_base` |
+|---|---|---|
+| h_int 상대 이득 non-contact | 0.56% | 0.88% |
+| h_int 상대 이득 **contact** | **1.43%** | 0.72% |
+| z^c 오차 contact (h_int 끔 / 켬) | 0.0439 / 0.0432 | 0.0588 / 0.0584 |
+| z^c 오차 non-contact | 0.0175 | 0.0176 |
+| α 평균 non-contact / contact | 0.124 / 0.291 | 0.140 / 0.375 |
+| AUROC(α → contact) | 0.832 | 0.870 |
+
+- 학습 중 batch 평균 이득도 두 모델 모두 0.2~0.8%였다(oracle 모델은 첫 epoch에만 2~5%까지 올랐다가 내려왔다).
+
+**해석**
+- **정답 state를 줘도 충돌 구간 이득은 1.4%다.** E9에서 같은 종류의 정답 state로 MLP probe가 contact 잔차를 40~50% 설명한 것과 차이가 크다. 그래서 병목은 "정보가 없어서"보다 "h_int가 그 정보로 잔차를 맞히도록 학습되지 않아서" 쪽이다.
+- 의심하는 원인: lr 5e-5는 zero-init으로 새로 붙인 h_int에 너무 작다(probe는 따로 수렴할 때까지 학습했다). E19에서 h_int와 gate만 lr 1e-3으로 학습해 확인한다.
+- oracle 모델은 h_int를 끈 z^c 오차도 contact 구간에서 더 낮다(0.044 대 0.059). 두 모델이 encoder부터 따로 학습되어 생긴 차이일 수 있어, seed 반복 없이는 해석하지 않는다.
+
+**결과물:** Proton Drive `results/E16_oracle_hint/`에 두 모델의 `weights_epoch_4.pt`와 config가 있다. 분석 txt와 csv도 같은 폴더에 있다.
+
 ## 2026-11-04 · E17. obstacle 개수(1~5개)에 따른 planning 성공률 (강연우)
 
 **목적:** 프로포절 때 받은 "obstacle이 많아지면 어떻게 되는가" 질문에 답한다. obstacle 1개로 학습한 모델을 obstacle 1~5개 환경에서 평가한다.
