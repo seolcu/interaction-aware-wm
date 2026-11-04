@@ -817,6 +817,34 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 
 **결과물:** Proton Drive `발표자료/midterm_figs/`의 `gate_env{0,2,5,15}.gif`, `.png`, `steps.csv`, `summary.txt`, `arrange.txt`. 중간 발표 덱 8페이지에 넣었다.
 
+## 2026-11-04 · E19. h_int와 gate만 lr 1e-3으로 학습
+
+**목적:** E16에서 h_int가 정답 state를 받고도 배우지 못했다. h_int, `int_in`, `int_out`, gate만 lr을 1e-3으로 올리고(나머지는 5e-5) 이득이 커지는지 본다.
+
+**설정**
+- `scripts/train.py`에 `model.int_lr`을 추가했다. 주면 stable-pretraining의 regex 기반 optimizer 분리로 `model.predictor.(h_int|int_in|int_out|gate)`에 따로 AdamW를 붙인다. smoke test에서 `int_opt` 73만 개, `model_opt` 1905만 개 parameter로 나뉜 것을 확인했다.
+- data와 나머지 설정은 E16과 같다(obstacle 1개, 1만 episode, distractor N=2, supervised gate, 4 epoch). E16 세션이 끊겨 새 세션에서 data를 다시 모았다.
+  - `e19_lr`: `+model.int_lr=1e-3`
+  - `e19_lr_oracle`: 위 + `+model.predictor.int_oracle_dim=8`
+
+**결과** (`analyze_gate.py --episodes 500 --distractors 2`)
+
+| | `e16_base` (lr 5e-5) | **`e19_lr`** | `e16_oracle` (lr 5e-5) | `e19_lr_oracle` |
+|---|---|---|---|---|
+| h_int 상대 이득 non-contact | 0.88% | 6.6% | 0.56% | 13.6% |
+| h_int 상대 이득 **contact** | 0.72% | **5.2%** | 1.43% | **37.9%** |
+| z^c 오차 contact (h_int 끔 → 켬) | 0.0588 → 0.0584 | 0.0647 → **0.0582** | 0.0439 → 0.0432 | 0.0653 → 0.0368 |
+| α 평균 non-contact / contact | 0.140 / 0.375 | 0.124 / 0.564 | 0.124 / 0.291 | 0.111 / 0.515 |
+| AUROC(α → contact) | 0.870 | **0.911** | 0.832 | 0.904 |
+
+**해석**
+- **lr만 바꿔서 h_int가 처음으로 의미 있게 배웠다.** 정답 state 없이 실제로 쓸 수 있는 모델(`e19_lr`)에서 contact 구간 z^c 오차가 h_int로 10% 줄었다(0.0647 → 0.0582). E8~E16의 1% 미만과 비교된다. 정답 state를 주면 44% 준다. 그래서 E16, E20의 진단대로 병목은 h_int의 학습 속도였다.
+- 다만 `e19_lr`은 h_int를 끈 g의 contact 오차가 E16보다 높다(0.0647 대 0.0588). h_int가 일을 나눠 가지면서 g가 충돌 구간을 덜 맞히게 됐을 수 있다. 그래서 h_int를 켠 최종 오차는 E16 base와 거의 같다(0.0582 대 0.0584). 성공률이 오르는지는 E21에서 본다.
+- non-contact에서도 6.6% 이득이 난다. gate가 non-contact에서는 α 0.12로 닫혀 있으므로 실제 예측에는 작게 반영된다.
+- 정답 state와의 차이(5% 대 38%)는 latent의 obstacle 정보가 부족하다는 E10, E20의 결론과 맞다. 다음 개선 대상은 encoder다.
+
+**결과물:** Proton Drive `results/E19_hint_lr/`에 두 모델의 `weights_epoch_4.pt`와 config, 분석 txt와 csv가 있다.
+
 ## 2026-11-04 · E20. 학습된 모델을 고정하고 h_int만 새로 학습 (frozen h_int fit)
 
 **목적:** E16에서 정답 state를 넣어도 h_int 이득이 1.4%였다. 원인이 h_int 구조인지, 함께 학습하는 방식인지, 잔차 자체가 어려운지 나눈다.
