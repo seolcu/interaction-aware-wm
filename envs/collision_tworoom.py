@@ -195,6 +195,10 @@ class CollisionTwoRoomEnv(TwoRoomEnv):
         k = 1 if self.obstacle_info == 'first' else None
         info['obstacle_pos'] = self.obstacle_pos[:k].detach().cpu().numpy().copy()
         info['obstacle_vel'] = self.obstacle_vel[:k].detach().cpu().numpy().copy()
+        if k == 1 and self.obstacle_pos.shape[0] == 0:
+            # num_obstacles=0 대조군 평가(E24): 평가 buffer 모양(obstacle 1개)에 맞춘다.
+            info['obstacle_pos'] = np.zeros((1, 2), dtype=np.float32)
+            info['obstacle_vel'] = np.zeros((1, 2), dtype=np.float32)
         info['contact'] = bool(self.contact)
         info['pinned'] = bool(self.pinned)
         return info
