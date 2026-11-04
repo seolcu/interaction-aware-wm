@@ -780,7 +780,7 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 **설정**
 - 모델: E12 `e12_sup`(gate) epoch 8과 같은 조건의 CF-JEPA. 둘 다 obstacle 1개 data로 학습했다.
 - 2, 4, 5개는 새로 평가했다(seed 42, 43, seed당 50 episodes). 1개는 E13, 3개는 E14 값을 그대로 쓴다.
-- 코드는 `yeonwoo/midterm-figs` branch의 `scripts/colab/eval_obstacle_sweep.sh`, `scripts/plot_obstacle_sweep.py`다(main에는 아직 합치지 않았다).
+- 코드는 `yeonwoo/midterm-figs` branch의 `scripts/colab/eval_obstacle_sweep.sh`, `scripts/plot_obstacle_sweep.py`다(PR #1로 main에 합쳤다).
 
 **결과** (성공률 %, 표준오차 약 ±4~5%p)
 
@@ -804,7 +804,7 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 
 **설정**
 - 모델: E12 `e12_sup` epoch 8, Collision TwoRoom obstacle 1개, seed 42, 16 episodes.
-- 코드는 `yeonwoo/midterm-figs` branch의 `scripts/record_gate_rollout.py`다. 화면 아래에 α_t 선과 실제 contact 구간(띠)을 함께 그린다.
+- 코드는 `yeonwoo/midterm-figs` branch의 `scripts/record_gate_rollout.py`다(PR #1로 main에 합쳤다). 화면 아래에 α_t 선과 실제 contact 구간(띠)을 함께 그린다.
 
 **결과**
 - 성공률 87.5%(16 episodes).
