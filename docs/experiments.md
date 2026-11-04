@@ -879,3 +879,30 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 - 정리: 1) lr을 키우면 h_int가 배울 수 있다(E19). 2) 실제 모델에서 남는 병목은 latent의 obstacle 정보다.
 
 **결과물:** `outputs/e20/*.log`를 Proton Drive `results/E20_frozen_hint_fit/`에 올렸다.
+
+## 2026-11-04 · E21. lr을 키운 gate(E19)의 planning 성공률
+
+**목적:** E19에서 h_int가 contact 구간 z^c 오차를 10% 줄였다. 이것이 planning 성공률로 이어지는지 본다.
+
+**설정**
+- `python scripts/eval.py --config-name=collision_tworoom +world.obstacle_info=first policy=<ckpt> seed=<42|43|44> [조건]`, CEM 300×30, seed당 50 episodes(조건당 150).
+- 조건: obstacle 1개(기본) / obstacle 3개 + `eval.eval_budget=30`(E14의 가장 어려운 조건).
+- 모델: CF-JEPA(E9 `cfjepa_collision_n2`, 10 epoch), `e19_lr`(gate learned / off), `e16_base`(lr 5e-5 gate, 같은 4 epoch).
+- E19 세션에서 E22 학습과 동시에 돌렸다. pipeline의 결과 파일 이름은 변수 덮어쓰기 때문에 `c3b_c3b_c1_...`처럼 길어졌지만 순서(c1 s42, 43, 44, c3b s42, 43, 44)는 맞다.
+
+**결과** (success rate %)
+
+| 모델 | 1개 s42 / 43 / 44 | **1개 평균** | 3개+30 s42 / 43 / 44 | **3개+30 평균** |
+|---|---|---|---|---|
+| CF-JEPA (10 epoch) | 90 / 90 / 84 | **88.0** | 58 / 66 / 56 | **60.0** |
+| `e19_lr` gate learned | 92 / 94 / 78 | **88.0** | 66 / 68 / 56 | **63.3** |
+| `e19_lr` gate off | 82 / 86 / 80 | 82.7 | 68 / 72 / 66 | 68.7 |
+| `e16_base` gate learned | 88 / 86 / 80 | 84.7 | 64 / 76 / 62 | 67.3 |
+
+**해석**
+- **H1은 이번에도 확인하지 못했다.** 예측이 좋아진 `e19_lr`도 1개 조건에서 CF-JEPA와 같고(88.0), 어려운 조건에서 3.3%p 높지만 표준오차(약 ±4%p) 안이다.
+- 어려운 조건에서는 오히려 같은 모델의 gate off(68.7)와 `e16_base`(67.3)가 더 높다. 1개 조건에서는 반대로 gate off가 낮다. 조건마다 순위가 바뀌므로 noise 수준의 차이로 본다.
+- 예측 개선(contact z^c 오차 −10%)이 성공률로 이어지지 않았다. 후보 원인: 1) 개선 폭이 아직 작다(정답 state 상한은 −44%). 2) planning cost는 goal까지의 z^c 거리라, 충돌 직후 몇 step의 예측 오차가 계획 결과를 크게 바꾸지 않는다. 3) 1만 episode, 4 epoch 모델이라 CF-JEPA(10 epoch)보다 덜 학습됐다.
+- 2607.10362(planner가 도달하는 state의 예측 충실도가 성공을 좌우하고 data 평균 오차와는 거의 무관하다)와 같은 방향의 관찰이다.
+
+**결과물:** `outputs/e21/res/status.txt`를 Proton Drive `results/E21_hint_lr_planning/`에 올렸다.
