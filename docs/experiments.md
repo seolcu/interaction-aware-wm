@@ -949,3 +949,34 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 - E19~E23을 합치면: h_int의 예측 이득은 lr 수정으로 7배 이상 커졌지만(0.7% → 5~7%), planning 성공률은 어떤 조건에서도 CF-JEPA보다 높지 않았다.
 
 **결과물:** `outputs/e23/res/status.txt`를 Proton Drive `results/E23_aux_lr_planning/`에 올렸다. 평가 뒤 Colab 세션을 종료했다(남은 CU 52).
+
+## 2026-11-04 · E24. 조건별 재평가: 충돌이 성공을 좌우하는 조건 고르기 (재학습 없음)
+
+**목적:** 지금까지의 조건에서는 gate 효과를 볼 여지가 있는지 분명하지 않았다. obstacle 없는 대조군을 함께 재서, 충돌 때문에 떨어지는 폭이 가장 큰 조건을 고른다. E25부터 이 조건을 기준으로 삼는다.
+
+**설정**
+- 모델: 같은 data와 4 epoch로 학습한 `e22_cf`(CF-JEPA), `e19_lr`(gate learned / off). 모두 obstacle 1개, 반지름 14 data로 학습했다.
+- `python scripts/eval.py --config-name=collision_tworoom +world.obstacle_info=first policy=<ckpt> seed=<42|43> [조건]`, seed당 50 episodes(조건당 100).
+- 평가 예산의 하한은 25다(planning horizon 5 × action block 5). 그래서 시간 제한은 30으로 둔다.
+- `num_obstacles=0` 평가를 위해 `obstacle_info=first`에서 빈 obstacle을 0으로 채우게 했다.
+
+**결과** (success rate %, seed 2개 평균. 표준오차 약 ±4~5%p)
+
+| 조건 | CF-JEPA | gate learned | gate off |
+|---|---|---|---|
+| `a0` obstacle 없음 | 91 | 93 | 93 |
+| `b0` obstacle 없음, budget 30 | 89 | 91 | 91 |
+| `c1b` 1개, budget 30 | 82 | 77 | 76 |
+| `c5b` 5개, budget 30 | 55 | 57 | 59 |
+| `f3b` 3개, 속도 6~10, budget 30 | 66 | 68 | 63 |
+| **`r3b` 3개, 반지름 22, budget 30** | **43** | **48** | **44** |
+
+**해석**
+- 시간 제한만으로는 거의 떨어지지 않는다(`a0` 91 → `b0` 89). E14, E21의 어려운 조건에서 성공률이 떨어진 원인은 obstacle이다.
+- **`r3b`를 기준 조건으로 고른다.** 같은 budget의 대조군보다 CF-JEPA가 46%p 떨어져 하락 폭이 가장 크다.
+- gate 차이는 어느 조건에서도 표준오차 안이다. `r3b`의 gate 48 대 CF-JEPA 43도 마찬가지다.
+- 한계: 하락 폭이 크다고 해서 충돌을 예측하면 회복할 수 있다는 보장은 없다. 큰 obstacle 3개는 학습 data(반지름 14, 1개)와 달라, 분포 밖 조건의 영향도 섞여 있다.
+
+**운영 메모:** 처음에는 평가 6개와 data 수집을 동시에 돌려 CPU(12개) load가 37까지 올랐고, 평가 하나가 3.5분에서 20분으로 늘었다. GPU 사용률은 0%였으므로 병목은 CPU다. 수집을 SIGSTOP으로 멈추고 평가를 3개씩 돌린 뒤 수집을 이어 갔다. 평가는 한 세션에서 3개씩 돌린다.
+
+**결과물:** `outputs/e24/res/status.txt`를 Proton Drive `results/E24_condition_screen/`에 올렸다.
