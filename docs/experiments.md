@@ -906,3 +906,46 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 - 2607.10362(planner가 도달하는 state의 예측 충실도가 성공을 좌우하고 data 평균 오차와는 거의 무관하다)와 같은 방향의 관찰이다.
 
 **결과물:** `outputs/e21/res/status.txt`를 Proton Drive `results/E21_hint_lr_planning/`에 올렸다.
+
+## 2026-11-04 · E22. gate + h_int lr 1e-3 + contact 보조 loss, 같은 4 epoch의 CF-JEPA
+
+**목적:** E19에서 h_int가 배우기 시작했고, 남은 병목은 latent의 obstacle 정보다(E20). encoder에 contact 보조 loss(E10, E12, 라벨 2%)를 더해 h_int 이득이 커지는지 본다. E21의 CF-JEPA는 10 epoch이라, 같은 data와 4 epoch로 맞춘 CF-JEPA도 함께 학습한다.
+
+**설정** (E19 세션, E21 평가와 동시에 학습)
+- `e22_aux`: `model=cfjepa_gate data=collision_tworoom_aux model.predictor.gate_objective=supervised +model.int_lr=1e-3 +model.contact_head=true +model.contact_aux_weight=1.0 +model.contact_aux_key=contact_next_p2`, 4 epoch
+- `e22_cf`: `model=cfjepa data=collision_tworoom_contact`, 4 epoch
+- 라벨 2% column은 `add_contact_labels.py --label-frac 0.02`로 만들었다(190 / 10000 episode).
+
+**결과** (`analyze_gate.py --episodes 500 --distractors 2`)
+
+| | `e22_aux` | `e19_lr` (참고) | `e22_cf` |
+|---|---|---|---|
+| h_int 상대 이득 non-contact / contact | 10.1% / **7.0%** | 6.6% / 5.2% | |
+| contact z^c 오차 (h_int 끔 → 켬) | 0.0883 → 0.0800 (−9.3%) | 0.0647 → 0.0582 (−10%) | 0.0511 |
+| α 평균 non-contact / contact | 0.117 / 0.513 | 0.124 / 0.564 | |
+| AUROC(α → contact) | 0.906 | 0.911 | |
+
+- `e22_aux`는 z^c 오차의 절댓값이 다른 모델보다 크다(non-contact 0.033 대 0.018). 보조 loss가 latent의 분포를 바꾸므로 모델 사이 절댓값은 비교하지 않는다.
+
+**해석:** 보조 loss를 더하면 contact 상대 이득이 5.2%에서 7.0%로 조금 커지지만, contact 구간 오차의 감소율은 E19와 비슷하다(약 10%). 보조 loss의 효과는 작다.
+
+**결과물:** Proton Drive `results/E22_aux_lr/`에 두 모델의 `weights_epoch_4.pt`, config, 분석 txt와 csv가 있다.
+
+## 2026-11-04 · E23. E22 모델의 planning 성공률
+
+**설정:** E21과 같다(obstacle 1개 / 3개 + budget 30, seed 42, 43, 44, 조건당 150 episodes). 모델은 `e22_cf`(4 epoch CF-JEPA), `e22_aux` gate learned, `e22_aux` gate off.
+
+**결과** (success rate %)
+
+| 모델 | 1개 s42 / 43 / 44 | **1개 평균** | 3개+30 s42 / 43 / 44 | **3개+30 평균** |
+|---|---|---|---|---|
+| `e22_cf` CF-JEPA (4 epoch) | 86 / 92 / 84 | **87.3** | 76 / 72 / 56 | **68.0** |
+| `e22_aux` gate learned | 82 / 94 / 86 | **87.3** | 60 / 58 / 54 | **57.3** |
+| `e22_aux` gate off | 84 / 86 / 82 | 84.0 | 62 / 68 / 54 | 61.3 |
+
+**해석**
+- obstacle 1개에서는 gate 모델과 CF-JEPA가 같다(87.3).
+- 어려운 조건에서는 gate 모델이 CF-JEPA보다 10.7%p 낮다. 표준오차(약 ±4%p)보다 크다. 같은 모델의 gate off(61.3)도 CF-JEPA보다 낮으므로, gate보다는 보조 loss가 encoder를 바꾼 영향으로 본다. E12(보조 loss + gate, 10 epoch)도 어려운 조건(E14)에서 CF-JEPA와 같은 수준이었으므로, 4 epoch에서 보조 loss가 아직 다른 학습을 방해하고 있을 수 있다.
+- E19~E23을 합치면: h_int의 예측 이득은 lr 수정으로 7배 이상 커졌지만(0.7% → 5~7%), planning 성공률은 어떤 조건에서도 CF-JEPA보다 높지 않았다.
+
+**결과물:** `outputs/e23/res/status.txt`를 Proton Drive `results/E23_aux_lr_planning/`에 올렸다. 평가 뒤 Colab 세션을 종료했다(남은 CU 52).
