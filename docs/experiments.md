@@ -816,3 +816,38 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 **해석:** E12 분석(AUROC 0.905)과 같은 결론이다. gate는 충돌 순간을 알아차리지만, 켜졌을 때의 h_int 예측 이득은 0.5% 수준이라 성공률은 CF-JEPA와 같다.
 
 **결과물:** Proton Drive `발표자료/midterm_figs/`의 `gate_env{0,2,5,15}.gif`, `.png`, `steps.csv`, `summary.txt`, `arrange.txt`. 중간 발표 덱 8페이지에 넣었다.
+
+## 2026-11-04 · E20. 학습된 모델을 고정하고 h_int만 새로 학습 (frozen h_int fit)
+
+**목적:** E16에서 정답 state를 넣어도 h_int 이득이 1.4%였다. 원인이 h_int 구조인지, 함께 학습하는 방식인지, 잔차 자체가 어려운지 나눈다.
+
+**설정**
+- `scripts/fit_hint_frozen.py`. E16 모델(`e16_oracle`, `e16_base` epoch 4)을 고정하고, clip마다 z^c, z^u, action embedding, g의 예측(base), 다음 frame z^c, 정답 state, contact 라벨을 뽑는다(학습 3000 episode, 약 3만 clip / test 마지막 500 episode, 5133 clip, distractor N=2).
+- 새 head를 잔차(target − base)에 AdamW로 4000 step(batch 512) 학습한다. 출력은 학습과 같은 `tanh` 형태다.
+  - `tf_*`: 모델의 h_int와 같은 구조(AdaLN-zero transformer, depth 2, 출력층 zero-init)
+  - `mlp_*`: frame별 3층 MLP
+  - 입력: `oracle`(z^c, z^u, 정답 state), `latent`(z^c, z^u), `oracle_only`(정답 state, action)
+- E19 세션에서 학습과 같이 돌렸다.
+
+**결과** (test 상대 이득, non-contact / contact)
+
+| 모델 | head | lr | non-contact | contact |
+|---|---|---|---|---|
+| `e16_oracle` | 모델 안의 h_int (E16) | 5e-5, 함께 학습 | 0.60% | 1.41% |
+| `e16_oracle` | tf_oracle | 1e-3 | 16.4% | **26.1%** |
+| `e16_oracle` | tf_oracle | 5e-5 | 3.4% | **22.5%** |
+| `e16_oracle` | mlp_oracle_only | 1e-3 | 12.0% | 26.5% |
+| `e16_oracle` | tf_latent | 1e-3 | 8.3% | −10.9% |
+| `e16_oracle` | mlp_latent | 1e-3 / 5e-5 | −15.2% / 7.2% | −30.3% / 3.5% |
+| `e16_base` | 모델 안의 h_int (E16) | 5e-5, 함께 학습 | 0.89% | 0.79% |
+| `e16_base` | tf_oracle | 1e-3 | 12.1% | **29.3%** |
+| `e16_base` | mlp_oracle_only | 1e-3 | 5.2% | 23.9% |
+| `e16_base` | tf_latent | 1e-3 | 3.8% | −15.8% |
+
+**해석**
+- **h_int 구조는 문제가 아니다.** 같은 구조의 새 h_int가 정답 state로 contact 잔차를 26~29% 줄인다. lr 5e-5로도 22.5%다.
+- **같은 lr인데 함께 학습하면 1.4%, 고정하고 학습하면 22.5%다.** 그래서 병목은 함께 학습하는 방식이다. encoder, g, target이 같이 움직이는 동안 작은 lr의 h_int가 잔차를 따라가지 못한 것으로 본다. E19에서 h_int만 lr 1e-3으로 올리자 함께 학습해도 이득이 커졌다(학습 중 batch 평균 oracle 모델 8~13%, oracle 없는 모델 3~4.5%).
+- **latent만 넣으면 고정 모델에서는 contact 구간이 오히려 나빠진다**(tf_latent −11~−16%). 학습 data에는 맞추지만 test로 일반화하지 못한다. 이 encoder의 latent(distractor 있는 학습)에는 contact 잔차를 일반화해 설명할 obstacle 정보가 부족하다는 E10의 진단과 같다.
+- 정리: 1) lr을 키우면 h_int가 배울 수 있다(E19). 2) 실제 모델에서 남는 병목은 latent의 obstacle 정보다.
+
+**결과물:** `outputs/e20/*.log`를 Proton Drive `results/E20_frozen_hint_fit/`에 올렸다.
