@@ -227,6 +227,7 @@ class InteractionGatedPredictor(FactorizedPredictor):
         gate_init_bias: float = 0.0,
         gate_objective: str = 'sparsity',
         int_oracle_dim: int = 0,
+        int_arch: str = 'transformer',
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -249,17 +250,27 @@ class InteractionGatedPredictor(FactorizedPredictor):
         self.int_oracle_dim = int_oracle_dim
         self.oracle: torch.Tensor | None = None
         self.int_in = nn.Linear(d_c + d_u + int_oracle_dim, d_c)
-        self.h_int = Predictor(
-            num_frames=self.num_frames,
-            input_dim=d_c,
-            hidden_dim=int_hidden_dim,
-            output_dim=d_c,
-            depth=int_depth,
-            heads=int_heads,
-            dim_head=int_dim_head,
-            mlp_dim=int_mlp_dim,
-            dropout=dropout,
-        )
+        # int_arch='mlp' (E20 후보): AdaLN-zero transformer 대신 frame별 3층 MLP. transformer는 블록 gate와
+        # int_out이 모두 0에서 시작해 작은 lr에서 거의 움직이지 않는다는 의심을 확인하려고 둔다.
+        self.int_arch = int_arch
+        if int_arch == 'mlp':
+            self.h_int = nn.Sequential(
+                nn.Linear(2 * d_c, int_mlp_dim), nn.GELU(),
+                nn.Linear(int_mlp_dim, int_mlp_dim), nn.GELU(),
+                nn.Linear(int_mlp_dim, d_c),
+            )
+        else:
+            self.h_int = Predictor(
+                num_frames=self.num_frames,
+                input_dim=d_c,
+                hidden_dim=int_hidden_dim,
+                output_dim=d_c,
+                depth=int_depth,
+                heads=int_heads,
+                dim_head=int_dim_head,
+                mlp_dim=int_mlp_dim,
+                dropout=dropout,
+            )
         self.int_out = nn.Linear(d_c, d_c)
         nn.init.zeros_(self.int_out.weight)
         nn.init.zeros_(self.int_out.bias)
@@ -295,7 +306,8 @@ class InteractionGatedPredictor(FactorizedPredictor):
             else:
                 parts.append(z_c.new_zeros(*z_c.shape[:2], self.int_oracle_dim))
         x = self.int_in(torch.cat(parts, dim=-1))
-        delta = self.int_scale * torch.tanh(self.int_out(self.h_int(x, act_emb)))
+        h = self.h_int(torch.cat([x, act_emb], dim=-1)) if self.int_arch == 'mlp' else self.h_int(x, act_emb)
+        delta = self.int_scale * torch.tanh(self.int_out(h))
         self.last_delta = delta
         alpha_used = alpha.detach() if self.gate_isolated else alpha
         return alpha_used * delta, alpha
