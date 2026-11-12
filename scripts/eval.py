@@ -5,6 +5,8 @@
 - 결과 파일을 $STABLEWM_HOME/results/<output.filename>에 쓴다.
 - `+cost=last_mse`로 CF-JEPA의 planning cost를 평가 때 바꿀 수 있다(학습과 무관).
 - `+gate_mode=off`로 gate 모델의 h_int를 끄고 평가할 수 있다(같은 encoder로 gate 효과만 비교).
+- `+obs_fix=true`: 첫 관측을 dataset frame 대신 실제 env 화면으로 쓴다(E26, Collision env에서 필요).
+- `+plan_history=3`: planning에 과거 frame 3장(frameskip 간격)과 그 사이 action을 넣는다(E26, Collision env 전용).
 
 사용 예:
     python scripts/eval.py policy=cfjepa_tworoom_n2/weights_epoch_10.pt world.num_distractors=2
@@ -45,6 +47,71 @@ def img_transform(cfg):
         ]
     )
     return transform
+
+
+def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool):
+    """WorldModelPolicy에 두 가지를 더한다 (E26).
+
+    obs_fix: World._evaluate_from_dataset은 env를 dataset 시작 상태로 맞춘 뒤 첫 관측 pixels를 dataset
+        frame으로 덮어쓴다. 원래 TwoRoom에서는 env 화면과 같지만, Collision env는 obstacle을 새로 놓으므로
+        첫 계획이 실제와 다른 obstacle 배치를 보고 세워진다. episode 첫 step에서 pixels를 env.render()로 바꾼다.
+    history > 1: 계획할 때 frame t-(history-1)·fs, ..., t-fs, t와 그 사이에 실행한 action block을 넣는다
+        (학습과 같은 frameskip 간격). episode 시작 전 frame은 env.render_past로 만들고 action은 0이다
+        ("시작 위치에 멈춰서 지켜보았다"). action은 process['action']으로 학습과 같이 정규화한다.
+    """
+
+    class HistoryPolicy(base_cls):
+        def set_env(self, env):
+            super().set_env(env)
+            n = getattr(env, 'num_envs', 1)
+            self.frames = [[] for _ in range(n)]   # env step마다의 frame (HWC uint8), 시작 전 frame 포함
+            self.raw_actions = [[] for _ in range(n)]  # env step마다 실행한 raw action, 시작 전은 0
+            self.started = np.zeros(n, dtype=bool)
+
+        def _unwrapped(self, i):
+            return self.env.envs[i].unwrapped
+
+        def get_action(self, info_dict, **kwargs):
+            info_dict = dict(info_dict)
+            pix = np.array(info_dict['pixels'], copy=True)  # (n, 1, H, W, C)
+            n = pix.shape[0]
+            pre = (history - 1) * frameskip
+            for i in range(n):
+                if not self.started[i]:
+                    env = self._unwrapped(i)
+                    if obs_fix:
+                        pix[i, -1] = np.asarray(env.render())
+                    if pre > 0:
+                        for k in range(pre, 0, -1):
+                            self.frames[i].append(np.asarray(env.render_past(k)))
+                            self.raw_actions[i].append(np.zeros(self.env.single_action_space.shape, np.float32))
+                    self.started[i] = True
+                self.frames[i].append(pix[i, -1].copy())
+            info_dict['pixels'] = pix
+            if history > 1:
+                idx = [-1 - frameskip * j for j in range(history - 1, -1, -1)]  # t-(h-1)fs ... t
+                info_dict['pixels'] = np.stack(
+                    [np.stack([self.frames[i][j] for j in idx]) for i in range(n)]
+                )
+                acts = []
+                for i in range(n):
+                    a = np.stack(self.raw_actions[i][-pre:])  # (pre, A): frame t-(h-1)fs부터 t 직전까지
+                    if 'action' in self.process:
+                        a = self.process['action'].transform(a)
+                    acts.append(a.reshape(history - 1, -1))  # (h-1, fs*A), 학습 data와 같은 순서
+                info_dict['hist_action'] = np.stack(acts).astype(np.float32)
+            if not getattr(self, '_logged', False):  # 첫 호출에서 입력 모양을 한 번 남긴다 (smoke test 확인용)
+                self._logged = True
+                print('[history policy] pixels', info_dict['pixels'].shape,
+                      'hist_action', getattr(info_dict.get('hist_action'), 'shape', None),
+                      'frames/env', len(self.frames[0]), 'obs_fix', obs_fix, flush=True)
+            action = super().get_action(info_dict, **kwargs)
+            for i in range(n):
+                a = np.asarray(action[i], dtype=np.float32)
+                self.raw_actions[i].append(np.nan_to_num(a))  # 끝난 env는 nan -> 0 (더 쓰이지 않는다)
+            return action
+
+    return HistoryPolicy
 
 
 def get_episodes_length(dataset, episodes):
@@ -117,7 +184,14 @@ def run(cfg: DictConfig):
             model.predictor.gate_mode = cfg.gate_mode
         config = swm.PlanConfig(**cfg.plan_config)
         solver = hydra.utils.instantiate(cfg.solver, model=model)
-        policy = swm.policy.WorldModelPolicy(
+        plan_history = int(cfg.get("plan_history", 1))
+        obs_fix = bool(cfg.get("obs_fix", False))
+        policy_cls = swm.policy.WorldModelPolicy
+        if plan_history > 1 or obs_fix:  # E26: 첫 관측을 실제 env 화면으로, planning에 과거 frame 넣기
+            policy_cls = make_history_policy(
+                policy_cls, plan_history, cfg.plan_config.action_block, obs_fix
+            )
+        policy = policy_cls(
             solver=solver, config=config, process=process, transform=transform
         )
 

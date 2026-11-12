@@ -32,6 +32,8 @@ from stable_worldmodel.wm.lewm import LeWM
 from stable_worldmodel.wm.lewm.module import MLP, Block, Predictor, Transformer
 from torch import nn
 
+from iawm.cfjepa import history_get_cost
+
 
 class GradientReversal(torch.autograd.Function):
     """forward는 그대로, backward는 gradient 부호를 뒤집는다 (Ganin & Lempitsky, 2015)."""
@@ -152,6 +154,9 @@ class CFJEPA(LeWM):
     def adversary(self, z_u_t: torch.Tensor, z_u_next: torch.Tensor) -> torch.Tensor:
         x = grad_reverse(torch.cat([z_u_t, z_u_next], dim=-1), self.grl_scale)
         return self.adversary_head(x)
+
+    def get_cost(self, info_dict: dict, action_candidates: torch.Tensor) -> torch.Tensor:
+        return history_get_cost(self, info_dict, action_candidates)  # E26, iawm.cfjepa 참고
 
     def criterion(self, info_dict: dict) -> torch.Tensor:
         """z^c만으로 cost를 계산한다. 반환: (B, S)."""
