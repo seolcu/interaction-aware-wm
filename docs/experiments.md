@@ -1121,3 +1121,39 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 **다음 (E29):** (a)를 multistep 진단(상상 α의 AUROC)으로 확인한다. (b)를 우회하기 위해 gate α 자체를 충돌 회피 cost로 쓴다(cost += λ·d0·Σα). 같은 방식의 정답판(`oracle_avoid`, push는 모르고 충돌만 피함)으로 이 방법의 상한도 잰다.
 
 **결과물:** `outputs/e28/res/e28/`(git 제외)에 평가 log와 `status.txt`가 있다.
+
+## 2026-11-12 · E29. Gate α를 충돌 회피 cost로 쓰기, 상상 rollout에서의 α
+
+**목적:** E28에서 r3b는 interaction을 정확히 예측하면 35%p 오를 수 있는 조건으로 확인됐다. push 결과를 정확히 맞히지 못해도 "충돌이 일어날지"만 알면 피할 수 있다. 그래서 gate α를 planning cost에 넣어 본다. 함께 상상 rollout 안에서 α가 미래 충돌을 맞히는지 확인한다.
+
+**설정**
+- `iawm.cfjepa_gate.CFJEPA.get_cost`: `contact_cost = λ > 0`이면 상상 rollout의 각 block에서 α(다음 block contact 확률로 학습됨)를 모아 cost += λ · d0 · Σ_k α_k를 더한다. d0는 현재 z^c와 goal z^c의 거리라서 λ는 단위가 없다. `scripts/eval.py`의 `+contact_cost=λ`로 켠다.
+- 정답판 `oracle_avoid`: push는 모르는 blind simulator에 충돌 block마다 λ · d0를 더한다(λ = 1).
+- 모델: `e27_gate`(epoch 10). 평가는 P2, seed 42/43/44.
+- 진단: `multistep_error.py --ckpts e27_cf,e27_gate --data r3t_contact.h5 --steps 5 --distractors 0 --gate-modes learned,off`. r3t는 학습 data와 seed가 다른 obstacle 3개 data 600 episode다.
+- L4, 약 1시간.
+
+**결과: planning** (success rate %, seed 3개 평균)
+
+| 조건 | gate (E27, cost 없음) | λ = 0.5 | λ = 1 | λ = 2 | oracle_blind | oracle_avoid | oracle_aware |
+|---|---|---|---|---|---|---|---|
+| r3b | 50.7 | 54.7 (56 / 52 / 56) | 47.3 (48 / 42 / 52) | 45.3 (50 / 46 / 40) | 60.0 | **71.3** (72 / 70 / 72) | 94.7 |
+| c1b | 76.0 | | 67.3 (76 / 56 / 70) | | 90.7 | | 98.0 |
+
+**결과: 상상 rollout** (k block 앞 z^c 오차 / persistence 오차. 낮을수록 좋다. contact는 1~k block 사이 충돌이 있는 clip)
+
+| k | CF-JEPA contact | gate off contact | gate learned contact | gate learned non-contact | 상상 α AUROC |
+|---|---|---|---|---|---|
+| 1 | 0.312 | 0.310 | **0.259** | 0.050 | 0.964 |
+| 2 | 0.362 | 0.362 | 0.317 | 0.051 | 0.903 |
+| 3 | 0.415 | 0.407 | 0.380 | 0.061 | 0.869 |
+| 5 | 0.503 | 0.486 | 0.471 | 0.084 | 0.816 |
+
+**해석**
+- **상상 rollout에서도 gate는 미래 충돌을 맞힌다.** 예측한 z^u만으로 5 block 앞 contact의 AUROC가 0.82다. "상상한 z^u로는 충돌을 모른다"는 후보 (a)는 아니다.
+- **α를 cost로 써도 성공률은 오르지 않는다.** λ = 0.5의 54.7은 표준오차 안이다. λ를 키우면 오히려 떨어지고, c1b에서도 떨어진다. 정답판 avoid도 71%로 aware(95%)에 크게 못 미친다. 이 조건에서 obstacle 3개(반지름 22)는 피하기 어렵다. 이득의 대부분은 피하는 데서가 아니라, 밀린 뒤 어디에 있게 될지 아는 데서 나온다.
+- **병목은 push 결과 예측이다.** contact clip의 z^c 오차는 non-contact의 5~6배이고, gate는 이를 k=1에서 17%, k=5에서 3%만 줄인다. h_int는 z^c, z^u, action만 보고 push를 바로 맞혀야 한다. 하지만 env는 "각자 움직인 뒤 겹치면 밀어낸다"로 동작하므로, push는 (agent가 갈 곳, obstacle이 갈 곳)의 함수로 보는 편이 단순하다.
+
+**다음 (E30):** 학습된 모델을 고정하고 h_int 입력 후보를 새로 학습해 비교한다. 후보는 [z^c, z^u]와, 여기에 g의 예측(push 전 agent)과 h의 예측(다음 z^u)을 더한 입력(resolve)이다.
+
+**결과물:** `outputs/e29/res/e29/`(git 제외)에 평가 log, `multistep.txt`, `status.txt`가 있다.
