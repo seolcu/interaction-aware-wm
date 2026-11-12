@@ -7,7 +7,8 @@
 - `+gate_mode=off`로 gate 모델의 h_int를 끄고 평가할 수 있다(같은 encoder로 gate 효과만 비교).
 - `+obs_fix=true`: 첫 관측을 dataset frame 대신 실제 env 화면으로 쓴다(E26, Collision env에서 필요).
 - `+plan_history=3`: planning에 과거 frame 3장(frameskip 간격)과 그 사이 action을 넣는다(E26, Collision env 전용).
-- `policy=oracle_aware|oracle_blind`: 학습된 모델 대신 정답 simulator로 CEM 계획한다(E28, Collision env 진단 전용).
+- `policy=oracle_aware|oracle_blind|oracle_avoid`: 학습된 모델 대신 정답 simulator로 CEM 계획한다(E28, Collision env 진단 전용).
+- `+contact_cost=λ`: gate 모델의 상상 α로 충돌 회피 cost를 더한다(E29). oracle_avoid에서는 정답 충돌에 같은 cost를 준다.
 
 사용 예:
     python scripts/eval.py policy=cfjepa_tworoom_n2/weights_epoch_10.pt world.num_distractors=2
@@ -180,7 +181,7 @@ def run(cfg: DictConfig):
             mode=str(policy).removeprefix("oracle_"),
             horizon=pc.horizon * pc.action_block, receding=pc.receding_horizon * pc.action_block,
             action_block=pc.action_block, samples=cfg.solver.num_samples, iters=cfg.solver.n_steps,
-            topk=cfg.solver.topk, seed=cfg.seed,
+            topk=cfg.solver.topk, seed=cfg.seed, contact_cost=float(cfg.get("contact_cost", 1.0)),
         )
     elif policy != "random":
         model = swm.wm.utils.load_pretrained(cfg.policy)
@@ -192,6 +193,8 @@ def run(cfg: DictConfig):
             model.cost = cfg.cost
         if cfg.get("gate_mode") is not None:  # gate 모델의 α 바꾸기: learned | always | off (E12, off는 CF-JEPA 부분만)
             model.predictor.gate_mode = cfg.gate_mode
+        if cfg.get("contact_cost") is not None:  # E29: 상상 α로 충돌 회피 cost (iawm.cfjepa_gate.CFJEPA.get_cost)
+            model.contact_cost = float(cfg.contact_cost)
         config = swm.PlanConfig(**cfg.plan_config)
         solver = hydra.utils.instantiate(cfg.solver, model=model)
         plan_history = int(cfg.get("plan_history", 1))

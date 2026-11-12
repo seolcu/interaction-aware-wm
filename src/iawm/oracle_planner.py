@@ -5,6 +5,8 @@
 
 - mode='aware': obstacle 궤적과 push를 simulator에 넣는다(완벽한 interaction 모델).
 - mode='blind': obstacle을 빼고 계획한다. "obstacle은 agent에 영향을 주지 않는다"는 CF-JEPA 가정과 같은 모델이다.
+- mode='avoid' (E29): blind처럼 push는 모르지만, 충돌하는 block마다 contact_cost · d0를 더한다(d0: 지금 target까지 거리).
+  push를 정확히 예측하지 않고 "충돌이 일어날지"만 알 때의 상한이다. gate α를 cost로 쓰는 방법(E29)의 정답판이다.
 
 두 성공률의 차이가 interaction을 정확히 예측했을 때 planning이 얻을 수 있는 최대 이득이다.
 Obstacle은 agent와 action의 영향을 받지 않으므로, 궤적을 한 번 계산해 모든 후보가 같이 쓴다.
@@ -20,9 +22,10 @@ from stable_worldmodel.policy import BasePolicy
 
 class OraclePlanner(BasePolicy):
     def __init__(self, mode='aware', horizon=25, receding=25, action_block=5,
-                 samples=300, iters=30, topk=30, seed=0, **kwargs):
+                 samples=300, iters=30, topk=30, seed=0, contact_cost=1.0, **kwargs):
         super().__init__(**kwargs)
-        assert mode in ('aware', 'blind')
+        assert mode in ('aware', 'blind', 'avoid')
+        self.contact_cost = contact_cost
         self.type = f'oracle_{mode}'
         self.mode = mode
         self.horizon, self.receding, self.block = horizon, receding, action_block
@@ -97,6 +100,9 @@ class OraclePlanner(BasePolicy):
         S, T, _ = actions.shape
         p = e.agent_position.float().expand(S, 2).clone()
         cost = torch.zeros(S)
+        hit = torch.zeros(S, dtype=torch.bool)  # avoid: 이번 block에 obstacle과 겹친 적이 있는가
+        min_d = float(e.variation_space['agent']['radius'].value.item()) + e.obstacle_radius
+        d0 = float((e.agent_position.float() - target).norm())
         for t in range(T):
             prev = p
             p = prev + actions[:, t] * speed
@@ -106,10 +112,15 @@ class OraclePlanner(BasePolicy):
                     p = self.clamp(e, prev, p)
             else:
                 p = self.clamp(e, prev, p)
+                if self.mode == 'avoid' and obs_traj.shape[1] > 0:
+                    hit |= ((p[:, None] - obs_traj[t][None]).norm(dim=-1) < min_d).any(-1)
             if traj is not None:
                 traj.append(p[0].clone())
             if (t + 1) % self.block == 0:
                 cost += (p - target).norm(dim=1)
+                if self.mode == 'avoid':
+                    cost += self.contact_cost * d0 * hit.float()
+                    hit = torch.zeros_like(hit)
         return cost
 
     def plan(self, e):

@@ -156,7 +156,37 @@ class CFJEPA(LeWM):
         return self.adversary_head(x)
 
     def get_cost(self, info_dict: dict, action_candidates: torch.Tensor) -> torch.Tensor:
-        return history_get_cost(self, info_dict, action_candidates)  # E26, iawm.cfjepa 참고
+        """E26 history cost에 contact 회피 항을 더한다 (E29).
+
+        contact_cost = λ > 0이고 gate가 켜져 있으면, 상상 rollout의 각 block에서 gate가 낸 α(다음 block에
+        충돌이 있을 확률로 학습됨)를 모아 cost += λ · d0 · Σ_k α_k 를 더한다. d0는 현재 z^c와 goal z^c의
+        거리라서 λ는 단위가 없다(λ = 1이면 충돌 block 하나가 지금 goal까지 거리만큼의 cost).
+        """
+        lam = float(getattr(self, 'contact_cost', 0.0) or 0.0)
+        pred = self.predictor
+        if lam <= 0 or getattr(pred, 'gate_mode', 'off') == 'off':
+            return history_get_cost(self, info_dict, action_candidates)  # E26, iawm.cfjepa 참고
+        alphas = []
+        orig = pred.forward
+
+        def forward_rec(emb, act_emb):
+            out = orig(emb, act_emb)
+            alphas.append(pred.last_alpha[:, -1, 0])  # rollout은 window 마지막 위치의 예측만 쓴다
+            return out
+
+        pred.forward = forward_rec
+        try:
+            cost = history_get_cost(self, info_dict, action_candidates)
+        finally:
+            del pred.forward
+        B, S = cost.shape
+        a_sum = torch.stack(alphas, dim=-1).float().view(B, S, -1).sum(-1)
+        emb = info_dict['emb']  # (B, S, H, D)
+        goal_emb = info_dict['goal_emb']
+        if goal_emb.ndim == emb.ndim - 1:
+            goal_emb = goal_emb[:, None]
+        d0 = (emb[..., -1, : self.dim_c] - goal_emb[..., -1, : self.dim_c]).norm(dim=-1).float()  # (B, S)
+        return cost + (lam * d0 * a_sum).to(cost.dtype)
 
     def criterion(self, info_dict: dict) -> torch.Tensor:
         """z^c만으로 cost를 계산한다. 반환: (B, S)."""
