@@ -1092,3 +1092,32 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 - 남은 질문은 "충돌을 정확히 예측하면 이 조건에서 성공률을 얼마나 올릴 수 있는가"이다. 상한이 낮다면 모델을 고쳐도 차이가 날 수 없다. E28에서 정답 simulator로 계획해 이 상한을 잰다.
 
 **결과물:** checkpoint `checkpoints/e27_cf`, `checkpoints/e27_gate`(git 제외, epoch 1~10), 평가와 분석 log `outputs/e27/res/e27/`(git 제외).
+
+## 2026-11-12 · E28. 정답 simulator로 계획한 상한 (학습 없음, CPU)
+
+**목적:** E27에서 1-step 충돌 예측은 좋아졌지만 성공률은 그대로였다. 충돌을 정확히 예측하면 이 평가 조건에서 성공률을 얼마나 올릴 수 있는지(상한)를 먼저 잰다. 상한이 낮으면 모델을 고쳐도 차이가 날 수 없다.
+
+**설정**
+- `src/iawm/oracle_planner.py`: 학습된 모델 대신 env의 실제 물리(agent 이동, 벽 clamp, obstacle push)를 300개 후보에 대해 batch로 계산하는 CEM planner다. CEM 설정(후보 300, 반복 30, top-k 30, 25 step 계획 후 25 step 실행)과 cost(블록 끝 target 거리의 합)는 모델 planning과 같다.
+  - `oracle_aware`: obstacle 궤적과 push를 넣는다(완벽한 interaction 모델).
+  - `oracle_blind`: obstacle을 뺀다. "obstacle은 agent에 영향을 주지 않는다"는 CF-JEPA 가정과 같은 모델이다.
+- `python scripts/eval.py --config-name=collision_tworoom +world.obstacle_info=first policy=oracle_<mode> seed=<42|43|44> [조건]`. 평가 data와 시작 상태는 E26, E27과 같다.
+- 검증: local CPU에서 simulator 예측 위치와 실제 env 위치를 1,000 step 비교했다. 평균 차이는 0.004px이다. Colab log의 sim error가 큰 것은 성공한 env를 World가 바로 reset해서 생긴 값이고, 이후 commit에서 reset을 감지하도록 고쳤다.
+- Colab CPU 세션, 약 50분.
+
+**결과** (success rate %, seed 3개 평균. 괄호는 seed별)
+
+| 조건 | oracle_blind | oracle_aware | 차이 | 참고: 학습 모델 (E26, E27 P2) |
+|---|---|---|---|---|
+| b0 obstacle 없음 | | 98.0 (98 / 100 / 96) | | |
+| c1b | 90.7 (90 / 92 / 90) | 98.0 (98 / 100 / 96) | +7.3 | 73~85 |
+| **r3b** | **60.0** (60 / 62 / 58) | **94.7** (92 / 94 / 98) | **+34.7** | 49~54 |
+
+**해석**
+- **r3b에서 충돌을 정확히 예측하면 성공률이 35%p 오른다.** 이 조건은 interaction 모델링이 planning을 크게 바꿀 수 있는 조건이고, 상한이 낮아서 차이가 안 났던 것은 아니다.
+- CF-JEPA 가정과 같은 blind simulator도 60%로 학습 모델(49~54%)보다 높다. 학습 모델과 정답 사이의 차이는 두 부분이다. 하나는 일반 예측 오차(blind 60 대 모델 50 내외)이고, 다른 하나는 interaction(aware 95 대 blind 60)이다. 지금 gate는 두 번째 부분을 전혀 얻지 못한다.
+- 1-step 예측 개선(E27, contact 오차 −18.5%)이 이득으로 이어지지 않는 이유 후보: (a) planning은 5 block(25 step) 앞을 상상하는데, 상상한 z^u로는 gate가 미래 충돌을 맞히지 못한다. (b) push 결과를 정확히 맞히지 못해 충돌하는 후보의 cost가 충분히 커지지 않는다.
+
+**다음 (E29):** (a)를 multistep 진단(상상 α의 AUROC)으로 확인한다. (b)를 우회하기 위해 gate α 자체를 충돌 회피 cost로 쓴다(cost += λ·d0·Σα). 같은 방식의 정답판(`oracle_avoid`, push는 모르고 충돌만 피함)으로 이 방법의 상한도 잰다.
+
+**결과물:** `outputs/e28/res/e28/`(git 제외)에 평가 log와 `status.txt`가 있다.
