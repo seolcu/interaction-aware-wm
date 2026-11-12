@@ -7,6 +7,7 @@
 - `+gate_mode=off`로 gate 모델의 h_int를 끄고 평가할 수 있다(같은 encoder로 gate 효과만 비교).
 - `+obs_fix=true`: 첫 관측을 dataset frame 대신 실제 env 화면으로 쓴다(E26, Collision env에서 필요).
 - `+plan_history=3`: planning에 과거 frame 3장(frameskip 간격)과 그 사이 action을 넣는다(E26, Collision env 전용).
+- `policy=oracle_aware|oracle_blind`: 학습된 모델 대신 정답 simulator로 CEM 계획한다(E28, Collision env 진단 전용).
 
 사용 예:
     python scripts/eval.py policy=cfjepa_tworoom_n2/weights_epoch_10.pt world.num_distractors=2
@@ -172,7 +173,16 @@ def run(cfg: DictConfig):
     # -- run evaluation
     policy = cfg.get("policy", "random")
 
-    if policy != "random":
+    if str(policy).startswith("oracle_"):  # E28: 정답 simulator planner (src/iawm/oracle_planner.py)
+        from iawm.oracle_planner import OraclePlanner
+        pc = cfg.plan_config
+        policy = OraclePlanner(
+            mode=str(policy).removeprefix("oracle_"),
+            horizon=pc.horizon * pc.action_block, receding=pc.receding_horizon * pc.action_block,
+            action_block=pc.action_block, samples=cfg.solver.num_samples, iters=cfg.solver.n_steps,
+            topk=cfg.solver.topk, seed=cfg.seed,
+        )
+    elif policy != "random":
         model = swm.wm.utils.load_pretrained(cfg.policy)
         model = model.to("cuda")
         model = model.eval()
@@ -248,6 +258,10 @@ def run(cfg: DictConfig):
     end_time = time.time()
     
     print(metrics)
+    if getattr(policy, "sim_err", None):
+        err = np.array(policy.sim_err)
+        print(f"[oracle] sim error mean {err.mean():.4f} p50 {np.median(err):.4f} p99 {np.quantile(err, .99):.4f} "
+              f"frac>1px {(err > 1).mean():.4f} n={len(err)}")
 
     results_path = results_path / cfg.output.filename
     results_path.parent.mkdir(parents=True, exist_ok=True)
