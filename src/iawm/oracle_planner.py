@@ -34,6 +34,7 @@ class OraclePlanner(BasePolicy):
         n = getattr(env, 'num_envs', 1)
         self.queue = [[] for _ in range(n)]
         self.expect = [None] * n  # 직전 action 실행 뒤 simulator가 예측한 위치
+        self.target = [None] * n  # World는 성공한 env를 바로 reset한다(mode auto). target이 바뀌면 새 episode다.
         self.sim_err = []  # 예측 위치와 실제 위치의 차이 (aware면 0에 가까워야 한다)
 
     def set_seed(self, seed):
@@ -138,6 +139,9 @@ class OraclePlanner(BasePolicy):
         out = np.zeros((n, 2), dtype=np.float32)
         for i in range(n):
             e = self.env.envs[i].unwrapped
+            tgt = e.target_position.numpy().copy()
+            if self.target[i] is None or not np.allclose(tgt, self.target[i]):
+                self.target[i], self.expect[i], self.queue[i] = tgt, None, []
             if self.expect[i] is not None:
                 self.sim_err.append(float(np.linalg.norm(e.agent_position.numpy() - self.expect[i])))
             if not self.queue[i]:
