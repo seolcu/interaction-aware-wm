@@ -263,6 +263,7 @@ class InteractionGatedPredictor(FactorizedPredictor):
         gate_objective: str = 'sparsity',
         int_oracle_dim: int = 0,
         int_arch: str = 'transformer',
+        int_input: str = 'state',
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -284,7 +285,13 @@ class InteractionGatedPredictor(FactorizedPredictor):
         # 알 수 없으므로 이 설정은 예측 오차 진단 전용이다(oracle이 없으면 0으로 채운다).
         self.int_oracle_dim = int_oracle_dim
         self.oracle: torch.Tensor | None = None
-        self.int_in = nn.Linear(d_c + d_u + int_oracle_dim, d_c)
+        # int_input='resolve' (E30): h_int와 gate 입력에 g의 예측(push 전 다음 z^c)과 h의 예측(다음 z^u)을
+        # 더한다(detach). env가 "각자 움직인 뒤 겹치면 밀어낸다"로 동작하므로, 충돌 해소를 두 factor의
+        # 독립 예측 위에서 하게 한다. 'state'는 기존 입력([z^c, z^u])이다.
+        assert int_input in ('state', 'resolve')
+        self.int_input = int_input
+        extra = d_c + d_u if int_input == 'resolve' else 0
+        self.int_in = nn.Linear(d_c + d_u + int_oracle_dim + extra, d_c)
         # int_arch='mlp' (E20 후보): AdaLN-zero transformer 대신 frame별 3층 MLP. transformer는 블록 gate와
         # int_out이 모두 0에서 시작해 작은 lr에서 거의 움직이지 않는다는 의심을 확인하려고 둔다.
         self.int_arch = int_arch
@@ -310,7 +317,7 @@ class InteractionGatedPredictor(FactorizedPredictor):
         nn.init.zeros_(self.int_out.weight)
         nn.init.zeros_(self.int_out.bias)
 
-        self.gate = two_layer_mlp(d_c + 2 * d_u + d_c, gate_hidden_dim, 1)
+        self.gate = two_layer_mlp(d_c + 2 * d_u + d_c + extra, gate_hidden_dim, 1)
         nn.init.constant_(self.gate[-1].bias, gate_init_bias)
 
         self.last_alpha: torch.Tensor | None = None
@@ -318,13 +325,14 @@ class InteractionGatedPredictor(FactorizedPredictor):
         self.last_pred_c_base: torch.Tensor | None = None
         self.last_delta: torch.Tensor | None = None
 
-    def interaction(self, z_c, z_u, act_emb):
-        """α · h_int. 반환: (B, T, d_c), α (B, T, 1)."""
+    def interaction(self, z_c, z_u, act_emb, indep=None):
+        """α · h_int. 반환: (B, T, d_c), α (B, T, 1). indep: resolve일 때 [g 예측, h 예측] (B, T, d_c + d_u)."""
         if self.zu_stopgrad:
             z_u = z_u.detach()
         if self.gate_mode == 'learned':
             dz_u = torch.cat([torch.zeros_like(z_u[:, :1]), z_u[:, 1:] - z_u[:, :-1]], dim=1)
-            gate_in = torch.cat([z_c, z_u, dz_u, act_emb], dim=-1)
+            gate_parts = [z_c, z_u, dz_u, act_emb] + ([indep] if indep is not None else [])
+            gate_in = torch.cat(gate_parts, dim=-1)
             if self.gate_isolated:
                 gate_in = gate_in.detach()
             logit = self.gate(gate_in)
@@ -333,7 +341,7 @@ class InteractionGatedPredictor(FactorizedPredictor):
         else:
             alpha = z_c.new_ones(*z_c.shape[:2], 1)
             self.last_logit = None
-        parts = [z_c, z_u]
+        parts = [z_c, z_u] + ([indep] if indep is not None else [])
         if self.int_oracle_dim > 0:
             T = z_c.size(1)
             if self.oracle is not None:
@@ -357,6 +365,7 @@ class InteractionGatedPredictor(FactorizedPredictor):
             self.last_alpha = z_c.new_zeros(*z_c.shape[:2], 1)
             self.last_logit = self.last_delta = None
         else:
-            corr, self.last_alpha = self.interaction(z_c, z_u, act_emb)
+            indep = torch.cat([pred_c, pred_u], dim=-1).detach() if self.int_input == 'resolve' else None
+            corr, self.last_alpha = self.interaction(z_c, z_u, act_emb, indep)
             pred_c = pred_c + corr
         return torch.cat([pred_c, pred_u], dim=-1)
