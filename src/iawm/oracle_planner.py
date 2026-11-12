@@ -107,9 +107,14 @@ class OraclePlanner(BasePolicy):
             prev = p
             p = prev + actions[:, t] * speed
             if self.mode == 'aware' and obs_traj.shape[1] > 0:
-                for _ in range(3):  # env.step과 같이 push와 clamp를 반복한다 (겹침이 없으면 둘 다 그대로다)
-                    p = self.push(e, p, obs_traj[t], vel_traj[t])
-                    p = self.clamp(e, prev, p)
+                active = torch.ones(S, dtype=torch.bool)  # env.step처럼 겹침(tol 1e-3)이 없어진 후보는 멈춘다
+                for _ in range(3):
+                    q = self.clamp(e, prev, self.push(e, p, obs_traj[t], vel_traj[t]))
+                    p = torch.where(active[:, None], q, p)
+                    over = ((p[:, None] - obs_traj[t][None]).norm(dim=-1) < min_d - 1e-3).any(-1)
+                    active = active & over
+                    if not active.any():
+                        break
             else:
                 p = self.clamp(e, prev, p)
                 if self.mode == 'avoid' and obs_traj.shape[1] > 0:
