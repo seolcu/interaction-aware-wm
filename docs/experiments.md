@@ -1020,3 +1020,37 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 **남은 문제:** planner가 실제로 도달하는 state로 학습하는 실험은 CU가 충전되는 11/10 이후로 미룬다.
 
 **결과물:** `results/E25_rollout_loss/`에 `e25_gate`, `e25_cf`(`weights_epoch_4.pt`, `config.json`), 분석 결과, `status.txt`, `eval_status.txt`, `multistep.txt`를 올렸다. 평가 뒤 Colab 세션을 종료했다(남은 CU 8.60).
+
+## 2026-11-12 · E26. Planning 입력 고치기: 실제 첫 화면과 과거 frame 3장 (재학습 없음)
+
+**목적:** E13~E25에서 gate가 planning에서 한 번도 CF-JEPA를 넘지 못했다. 그래서 planning이 모델에 무엇을 넣는지 stable-worldmodel 0.1.1 원본을 확인했고, 문제 두 가지를 찾았다.
+1. **첫 관측이 실제 화면이 아니다.** `World._evaluate_from_dataset`은 env를 dataset 시작 상태로 맞춘 뒤 `infos['pixels']`를 dataset frame으로 덮어쓴다(world.py 523~530행). 원래 TwoRoom에서는 둘이 같다. 하지만 Collision env는 `_set_goal_state`에서 obstacle을 새로 놓으므로, 첫 계획이 실제와 다른 obstacle 배치(r3b라면 큰 obstacle 3개 대신 dataset의 작은 obstacle 1개)를 보고 세워진다. budget 30에서는 첫 계획(25 step을 한 번에 실행)이 성공을 거의 결정한다.
+2. **Planning은 frame 1장만 넣는다.** `PlanConfig.history_len`은 정의만 있고 쓰이지 않는다. 학습은 history 3 frame인데 planning에서는 1장이라, obstacle이 움직이는 방향을 알 수 없다.
+
+**구현** (branch `seolcu/plan-history`)
+- `scripts/eval.py`의 `+obs_fix=true`: episode 첫 step의 pixels를 `env.render()`로 바꾼다.
+- `+plan_history=3`: frame t−10, t−5, t와 그 사이 실행한 action block 2개(`hist_action`, 학습과 같이 정규화)를 넣는다. 시작 전 frame은 `CollisionTwoRoomEnv.render_past(k)`로 만든다. "agent가 시작 위치에 멈춰서 지켜보았다"고 보고, obstacle만 속도를 뒤집어 k step 되돌린 위치에 그린다. action은 0이다.
+- `iawm.cfjepa.history_get_cost`: `hist_action`을 후보 action 앞에 붙여 LeWM.rollout을 부른다. history 3 frame + 후보 5 step을 예측한다.
+- smoke test(3 episodes)에서 입력 모양을 확인했다. P2는 pixels (3, 3, 224, 224, 3), hist_action (3, 2, 10)이다.
+
+**설정:** E24와 같은 모델(`e22_cf`, `e19_lr` learned / off, 모두 obstacle 1개·반지름 14·distractor N=2 data로 4 epoch). 조건은 r3b, c1b이고 seed 42, 43, 44, 조건당 150 episodes다. P0는 기존 평가(E24, E25 값), P1은 `+obs_fix=true`, P2는 P1에 `+plan_history=3`을 더한 것이다. 평가 data(2,000 episode)는 새로 모았다. A100 약 1시간 10분.
+
+**결과** (success rate %, seed 3개 평균. 표준오차 약 ±4%p)
+
+| 조건 | 프로토콜 | CF-JEPA | gate learned | gate off |
+|---|---|---|---|---|
+| r3b | P0 (E24, E25) | 45.3 | 48.0 | 46.0 |
+| r3b | P1 실제 첫 화면 | **56.7** (54 / 60 / 56) | 51.3 (58 / 44 / 52) | 48.0 (46 / 48 / 50) |
+| r3b | P2 + history 3 | 54.0 (62 / 54 / 46) | 50.7 (50 / 52 / 50) | 49.3 (50 / 50 / 48) |
+| c1b | P0 (E24, seed 2개) | 82 | 77 | 76 |
+| c1b | P1 | 81.3 (82 / 80 / 82) | 82.7 (88 / 74 / 86) | 80.7 (84 / 82 / 76) |
+| c1b | P2 | 84.7 (86 / 76 / 92) | 82.7 (78 / 86 / 84) | 80.7 (80 / 80 / 82) |
+
+**해석**
+- **첫 화면 버그는 성공률에 크게 영향을 준다.** 실제 화면을 넣으면 r3b에서 CF-JEPA가 45.3에서 56.7로 11.4%p 오른다(표준오차의 약 2.8배). 지금까지의 Collision env 평가는 모두 다른 obstacle 배치를 보고 첫 계획을 세운 것이다. 앞으로 Collision env 평가는 P1 이상으로 한다.
+- **History를 넣어도 이 gate 모델은 이득을 보지 못했다.** r3b P2에서 gate 50.7 대 CF-JEPA 54.0이다. 이 모델은 obstacle 1개·작은 크기·distractor 있는 data로 학습해 r3b가 분포 밖이고, E20의 진단대로 latent에 obstacle 정보가 부족하다. 입력을 고친 다음 남은 병목은 모델 쪽이다.
+- CF-JEPA는 g가 z^u를 보지 않으므로 history가 obstacle 예측에 쓰이지 않는다. P1과 P2의 차이(56.7 대 54.0)는 noise 범위다.
+
+**다음 (E27):** r3b와 같은 data(obstacle 3개, 반지름 22)로, distractor 없이(E10에서 obstacle 정보 99%), h_int lr 1e-3, 10 epoch로 CF-JEPA와 gate를 학습하고 P2로 평가한다.
+
+**결과물:** `outputs/e26/res/e26/`(git 제외)에 평가 log 39개와 `status.txt`가 있다.
