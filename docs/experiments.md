@@ -1054,3 +1054,41 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 **다음 (E27):** r3b와 같은 data(obstacle 3개, 반지름 22)로, distractor 없이(E10에서 obstacle 정보 99%), h_int lr 1e-3, 10 epoch로 CF-JEPA와 gate를 학습하고 P2로 평가한다.
 
 **결과물:** `outputs/e26/res/e26/`(git 제외)에 평가 log 39개와 `status.txt`가 있다.
+
+## 2026-11-12 · E27. 평가 조건과 같은 data(obstacle 3개, 반지름 22)로 학습한 CF-JEPA와 gate
+
+**목적:** E26에서 planning 입력을 고친 뒤에도 기존 gate 모델은 이득이 없었다. 원인 후보는 학습 data와 평가 조건(r3b)이 다른 점과, distractor 때문에 latent에 obstacle 정보가 부족한 점(E10)이다. 둘을 함께 없애고 다시 비교한다.
+
+**설정**
+- 학습 data: `collect_collision.py --episodes 10000 --num-obstacles 3 --obstacle-radius 22 --name r3`, contact 라벨 추가(`r3_contact.h5`). 76.9만 frame이고 contact step 26.2%, contact가 있는 episode 97.6%, scripted policy의 goal 도달 52.9%다.
+- 모델 (distractor 없음, 10 epoch, A100에서 동시 학습 약 9시간):
+  - `e27_cf`: `model=cfjepa`
+  - `e27_gate`: `model=cfjepa_gate model.predictor.gate_objective=supervised +model.int_lr=1e-3`
+- 평가: E26의 P2(`+obs_fix=true +plan_history=3`), r3b와 c1b, seed 42/43/44, 조건당 150 episodes. gate는 learned와 `+gate_mode=off`로 잰다.
+- 분석: `analyze_gate.py --episodes 500 --distractors 0` (r3 data 500 episode, 1-step 예측).
+
+**결과: planning** (success rate %, seed 3개 평균. 괄호는 seed별. 표준오차 약 ±4%p)
+
+| 조건 | CF-JEPA | gate learned | gate off | 참고: E26 CF-JEPA (P2) |
+|---|---|---|---|---|
+| r3b | 49.3 (48 / 50 / 50) | 50.7 (50 / 54 / 48) | 50.7 (52 / 50 / 50) | 54.0 |
+| c1b | 73.3 (68 / 76 / 76) | 76.0 (78 / 76 / 74) | 73.3 (78 / 64 / 78) | 84.7 |
+
+**결과: 1-step 예측** (`e27_gate`, contact 비율 46.7%)
+
+| | non-contact | contact |
+|---|---|---|
+| z^c 오차, h_int 끔 | 0.0428 | 0.1519 |
+| z^c 오차, h_int 켬 (α=1) | 0.0435 | **0.1237** (−18.5%) |
+| 평균 α | 0.15 | 0.83 |
+
+- AUROC(α → contact) = 0.963이다.
+- contact 구간 z^c 오차는 h_int를 켜도 non-contact의 2.9배다.
+
+**해석**
+- **예측은 처음으로 분명히 좋아졌다.** contact 구간 z^c 오차가 h_int로 18.5% 줄었다. E15~E22의 0.5~10%보다 크다. 평가 조건과 같은 data, distractor 없음, h_int lr 1e-3의 조합에서 h_int가 충돌 효과를 배운다.
+- **그런데 planning 성공률은 그대로다.** r3b에서 gate 50.7, gate off 50.7, CF-JEPA 49.3으로 모두 표준오차 안이다. 1-step 예측 개선이 성공으로 이어지지 않는 현상(E21, E23)이 다시 나왔다.
+- obstacle 3개 data로 학습한 두 모델 모두 c1b에서는 E26 모델(obstacle 1개 data)보다 낮다. r3b에서도 E26 CF-JEPA(54.0)보다 높지 않다. data를 평가 조건에 맞춘 것만으로는 성공률이 오르지 않는다.
+- 남은 질문은 "충돌을 정확히 예측하면 이 조건에서 성공률을 얼마나 올릴 수 있는가"이다. 상한이 낮다면 모델을 고쳐도 차이가 날 수 없다. E28에서 정답 simulator로 계획해 이 상한을 잰다.
+
+**결과물:** checkpoint `checkpoints/e27_cf`, `checkpoints/e27_gate`(git 제외, epoch 1~10), 평가와 분석 log `outputs/e27/res/e27/`(git 제외).
