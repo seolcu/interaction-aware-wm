@@ -1157,3 +1157,51 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 **다음 (E30):** 학습된 모델을 고정하고 h_int 입력 후보를 새로 학습해 비교한다. 후보는 [z^c, z^u]와, 여기에 g의 예측(push 전 agent)과 h의 예측(다음 z^u)을 더한 입력(resolve)이다.
 
 **결과물:** `outputs/e29/res/e29/`(git 제외)에 평가 log, `multistep.txt`, `status.txt`가 있다.
+
+## 2026-11-13 · E30. 고정한 gate 모델에 h_int 입력 후보를 새로 학습 (resolve 입력 진단)
+
+**목적:** E29에서 병목은 push 결과 예측이었다. env는 "각자 움직인 뒤 겹치면 밀어낸다"로 동작하므로, h_int 입력에 g의 예측(push 전 agent)과 h의 예측(다음 z^u)을 더하면(resolve) push를 맞히기 쉬워지는지 학습 전에 본다.
+
+**설정**
+- `fit_hint_frozen.py --ckpt e27_gate/weights_epoch_10.pt --data r3f_contact.h5 --train-episodes 3000 --test-episodes 500 --distractors 0 --lrs 1e-3 --steps 6000`. r3f는 obstacle 3개(반지름 22) 3,500 episode이고, 학습 data와 seed가 다르다(777).
+- head: `tf_latent`, `mlp_latent`(기존 입력), `tf_resolve`, `mlp_resolve`(+ g 예측, h 예측), `mlp_resolve_true_u`(h 예측 대신 실제 다음 z^u). L4, 약 35분.
+
+**결과** (test clip 6,025개, contact 47.8%. 값은 z^c 오차의 상대 감소. 높을수록 좋다)
+
+| head | non-contact | contact | contact (pooled) |
+|---|---|---|---|
+| 모델 안의 h_int (함께 학습) | −1.9% | 7.7% | 12.0% |
+| tf_latent | −7.5% | −32.2% | −15.7% |
+| mlp_latent | −80.2% | −80.4% | −42.4% |
+| tf_resolve | −1.2% | −30.3% | −14.4% |
+| mlp_resolve | −74.7% | −71.6% | −38.7% |
+| mlp_resolve_true_u | 49.8% | 54.0% | 62.2% |
+
+**해석**
+- 새로 붙인 head는 모두 test에서 오차를 늘렸다. 3,000 episode(3.6만 clip)에 6,000 step(약 85 epoch)을 학습해 과적합한 것으로 보인다. 같은 조건에서 resolve가 기존 입력보다 조금 덜 나쁘지만, 이 진단으로는 두 입력을 가를 수 없다.
+- 실제 다음 z^u를 넣으면 non-contact에서도 50% 줄어든다. 다음 frame의 z^u에 agent 정보가 섞여 있다는 뜻이므로(leak), 이 값을 obstacle 예측이 완벽할 때의 상한으로 읽을 수는 없다.
+- 결론: frozen fit은 판단 근거가 되지 못했다. resolve 입력은 `iawm.cfjepa_gate`에 `int_input='resolve'`로 넣었고, 실제 학습(E32)으로 비교한다.
+
+**결과물:** `outputs/e30/res/e30/`(git 제외).
+
+## 2026-11-13 · E31. 정답 simulator로 학습 조건 고르기
+
+**목적:** E15에서 obstacle 3개 data는 정답 state로도 contact 잔차를 2~4%만 설명했다. r3b는 interaction 이득이 크지만(E28, +35%p) push가 복잡하다. obstacle이 적어 push가 단순하면서 interaction 이득이 큰 조건을 정답 simulator로 싸게 찾는다.
+
+**설정:** `oracle_blind`, `oracle_aware`, seed 42 (50 episodes), budget 30. CPU 세션, 약 30분. 이 실행 뒤 simulator의 push 반복 종료 조건을 env와 같게(겹침 tol 1e-3) 고쳐 local에서 3,000 step 오차 0px을 확인했다. 이번 결과는 고치기 전 값이다(aware가 약간 낮게 나왔을 수 있다).
+
+**결과** (success rate %, seed 1개)
+
+| 조건 | blind | aware | 차이 |
+|---|---|---|---|
+| `r1b` 1개, 반지름 22 | 80 | 98 | +18 |
+| **`r1x` 1개, 반지름 30** | **68** | **96** | **+28** |
+| `f1b` 1개, 반지름 22, 속도 6~10 | 84 | 98 | +14 |
+| `c2b` 2개, 반지름 14 | 82 | 98 | +16 |
+| `r2b` 2개, 반지름 22 | 68 | 96 | +28 |
+| `f2b` 2개, 반지름 22, 속도 6~10 | 78 | 98 | +20 |
+| (E28) `r3b` 3개, 반지름 22 | 60 | 95 | +35 |
+
+**결정:** obstacle 1개로 이득이 가장 큰 `r1x`를 다음 학습 조건으로 한다. obstacle 1개 data에서는 latent가 contact 잔차를 정답 state만큼 설명했다(E10).
+
+**결과물:** Colab log는 받지 못했다(세션 종료 전 다운로드 실패). 위 표는 `outputs/e31/res/status_live.txt`의 값이다.
