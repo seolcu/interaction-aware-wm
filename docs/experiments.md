@@ -949,3 +949,74 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 - E19~E23을 합치면: h_int의 예측 이득은 lr 수정으로 7배 이상 커졌지만(0.7% → 5~7%), planning 성공률은 어떤 조건에서도 CF-JEPA보다 높지 않았다.
 
 **결과물:** `outputs/e23/res/status.txt`를 Proton Drive `results/E23_aux_lr_planning/`에 올렸다. 평가 뒤 Colab 세션을 종료했다(남은 CU 52).
+
+## 2026-11-04 · E24. 조건별 재평가: 충돌이 성공을 좌우하는 조건 고르기 (재학습 없음)
+
+**목적:** 지금까지의 조건에서는 gate 효과를 볼 여지가 있는지 분명하지 않았다. obstacle 없는 대조군을 함께 재서, 충돌 때문에 떨어지는 폭이 가장 큰 조건을 고른다. E25부터 이 조건을 기준으로 삼는다.
+
+**설정**
+- 모델: 같은 data와 4 epoch로 학습한 `e22_cf`(CF-JEPA), `e19_lr`(gate learned / off). 모두 obstacle 1개, 반지름 14 data로 학습했다.
+- `python scripts/eval.py --config-name=collision_tworoom +world.obstacle_info=first policy=<ckpt> seed=<42|43> [조건]`, seed당 50 episodes(조건당 100).
+- 평가 예산의 하한은 25다(planning horizon 5 × action block 5). 그래서 시간 제한은 30으로 둔다.
+- `num_obstacles=0` 평가를 위해 `obstacle_info=first`에서 빈 obstacle을 0으로 채우게 했다.
+
+**결과** (success rate %, seed 2개 평균. 표준오차 약 ±4~5%p)
+
+| 조건 | CF-JEPA | gate learned | gate off |
+|---|---|---|---|
+| `a0` obstacle 없음 | 91 | 93 | 93 |
+| `b0` obstacle 없음, budget 30 | 89 | 91 | 91 |
+| `c1b` 1개, budget 30 | 82 | 77 | 76 |
+| `c5b` 5개, budget 30 | 55 | 57 | 59 |
+| `f3b` 3개, 속도 6~10, budget 30 | 66 | 68 | 63 |
+| **`r3b` 3개, 반지름 22, budget 30** | **43** | **48** | **44** |
+
+**해석**
+- 시간 제한만으로는 거의 떨어지지 않는다(`a0` 91 → `b0` 89). E14, E21의 어려운 조건에서 성공률이 떨어진 원인은 obstacle이다.
+- **`r3b`를 기준 조건으로 고른다.** 같은 budget의 대조군보다 CF-JEPA가 46%p 떨어져 하락 폭이 가장 크다.
+- gate 차이는 어느 조건에서도 표준오차 안이다. `r3b`의 gate 48 대 CF-JEPA 43도 마찬가지다.
+- 한계: 하락 폭이 크다고 해서 충돌을 예측하면 회복할 수 있다는 보장은 없다. 큰 obstacle 3개는 학습 data(반지름 14, 1개)와 달라, 분포 밖 조건의 영향도 섞여 있다.
+
+**운영 메모:** 처음에는 평가 6개와 data 수집을 동시에 돌려 CPU(12개) load가 37까지 올랐고, 평가 하나가 3.5분에서 20분으로 늘었다. GPU 사용률은 0%였으므로 병목은 CPU다. 수집을 SIGSTOP으로 멈추고 평가를 3개씩 돌린 뒤 수집을 이어 갔다. 평가는 한 세션에서 3개씩 돌린다.
+
+**결과물:** `outputs/e24/res/status.txt`를 Proton Drive `results/E24_condition_screen/`에 올렸다.
+
+## 2026-11-04 · E25. 여러 step 앞까지 이어 붙인 예측 loss (최종 발표용)
+
+**목적:** planning은 예측을 되먹여 5 step 앞까지 가는데, 지금까지의 학습은 1 step 예측 오차만 줄였다. 학습에서도 예측을 되먹이는 loss를 더하면 충돌을 포함한 긴 구간 예측과 성공률이 좋아지는지 본다.
+
+**설정**
+- 구현: `scripts/train.py`의 `loss.rollout_steps`, `loss.rollout_weight`. history 3 frame에서 k step 앞까지 예측을 되먹이고 각 step의 embedding 오차를 평균해 loss에 더한다. clip 길이를 6으로 늘린 `collision_tworoom_rollout` data config를 쓴다.
+- `e25_gate`: `model=cfjepa_gate model.predictor.gate_objective=supervised +model.int_lr=1e-3 data=collision_tworoom_rollout +loss.rollout_steps=3 +loss.rollout_weight=1.0 trainer.max_epochs=4`
+- `e25_cf`: `model=cfjepa`, 나머지는 같다.
+- 평가: `python scripts/eval.py --config-name=collision_tworoom +world.obstacle_info=first policy=<ckpt> seed=<42|43|44> [조건]`, 조건당 150 episodes. 비교 대상은 rollout loss 없이 같은 data, 같은 4 epoch로 학습한 `e22_cf`, `e19_lr`이다. `r3b`의 비교 대상은 E24의 seed 2개에 이번에 잰 seed 44를 합쳤고, 나머지 조건은 E21, E23의 값이다.
+- 긴 구간 예측 진단: `python scripts/multistep_error.py --ckpts <ckpt들>`, test 500 episodes, 3459 clips. 모델마다 latent 크기가 달라 persistence(마지막 관측 z^c를 그대로 쓴 예측) 오차로 나눈 비율을 쓴다. 낮을수록 좋다.
+
+**결과: 성공률** (success rate %. 표준오차 약 ±4%p)
+
+| 조건 | `e22_cf` | `e25_cf` | `e19_lr` learned | `e25_gate` learned | `e19_lr` off | `e25_gate` off |
+|---|---|---|---|---|---|---|
+| obstacle 1개 | 87.3 | 80.0 | 88.0 | 83.3 | 82.7 | 82.0 |
+| 3개, budget 30 | 68.0 | 64.0 | 63.3 | 62.0 | 68.7 | 67.3 |
+| `r3b` 3개, 반지름 22, budget 30 | 45.3 | 48.0 | 48.0 | 46.0 | 46.0 | 44.0 |
+
+**결과: 긴 구간 예측** (persistence 대비 오차 비율. contact는 그 구간 안에 충돌이 있는 clip)
+
+| k step 앞 | `e22_cf` 전체 / contact | `e25_cf` 전체 / contact | `e19_lr` 전체 / contact | `e25_gate` 전체 / contact |
+|---|---|---|---|---|
+| 1 | 0.408 / 0.645 | 0.469 / 0.596 | 0.358 / 0.642 | 0.449 / 0.574 |
+| 3 | 0.297 / 0.534 | 0.301 / 0.535 | 0.261 / 0.544 | 0.306 / 0.523 |
+| 5 | 0.248 / 0.457 | 0.230 / 0.447 | 0.225 / 0.461 | 0.231 / 0.435 |
+
+**h_int 이득:** `e25_gate`의 contact 구간 이득은 6.67%(`e19_lr` 5.2%), α AUROC는 0.899(`e19_lr` 0.911)다.
+
+**해석**
+- **H1은 이번에도 확인하지 못했다.** 기준 조건 `r3b`에서 `e25_cf` 48.0, `e25_gate` 46.0으로 모두 표준오차 안이다. gate가 CF-JEPA보다 높지도 않다.
+- 쉬운 조건에서는 rollout loss를 넣은 모델이 오히려 낮다. obstacle 1개에서 CF-JEPA가 7.3%p, gate가 4.7%p 내려갔다. CF-JEPA의 하락은 표준오차의 2배에 못 미쳐 확정할 수는 없지만, 올라간 조건은 없다.
+- **rollout loss가 긴 구간 예측 자체를 크게 바꾸지 못했다.** 직접 학습한 k=3의 전체 비율은 CF-JEPA 0.297 → 0.301, gate 0.261 → 0.306으로 나아지지 않았다. contact 구간은 k=1에서 8~11%, k=5에서 2~6% 줄었지만, 충돌 없는 k=1 오차는 CF-JEPA 0.343 → 0.439, gate 0.282 → 0.416으로 늘었다.
+- 따라서 이번 결과는 "긴 구간 예측이 좋아져도 성공률이 그대로"라는 뜻이 아니다. 긴 구간 예측이 충분히 좋아지지 않아, 그 가설은 아직 검증되지 않았다.
+- 한계: 비율의 분모도 모델마다 다르므로 모델 간 비교는 근사다. clip은 겹치므로 3459개가 독립 표본은 아니다. weight 1.0, 3 step, 4 epoch 한 설정만 봤다.
+
+**남은 문제:** planner가 실제로 도달하는 state로 학습하는 실험은 CU가 충전되는 11/10 이후로 미룬다.
+
+**결과물:** `results/E25_rollout_loss/`에 `e25_gate`, `e25_cf`(`weights_epoch_4.pt`, `config.json`), 분석 결과, `status.txt`, `eval_status.txt`, `multistep.txt`를 올렸다. 평가 뒤 Colab 세션을 종료했다(남은 CU 8.60).

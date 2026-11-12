@@ -79,7 +79,8 @@ def world_model_forward(self, batch, stage, cfg):
     if getattr(pr_, 'int_oracle_dim', 0) > 0:
         pr_.oracle = torch.nan_to_num(batch['oracle_state'].float(), 0.0)
     pred_emb = self.model.predict(emb[:, :ctx_len], act_emb[:, :ctx_len])
-    tgt_emb = emb[:, n_preds:]
+    # E25: rollout_steps > 0이면 clip이 history보다 길다. 1-step loss는 앞쪽 history 구간만 쓴다.
+    tgt_emb = emb[:, n_preds:ctx_len + n_preds]
 
     output['fwd_loss'] = (pred_emb - tgt_emb).pow(2).mean()
     output['sigreg_loss'] = self.sigreg(emb.transpose(0, 1))
@@ -179,6 +180,23 @@ def world_model_forward(self, batch, stage, cfg):
             on_step=True, sync_dist=True,
         )
     # ---- [interaction gate] 추가 끝 ---------------------------------------------------
+
+    # ---- [여러 step 예측 loss] E25 ----------------------------------------------------
+    # 1-step 예측만 학습하면 planning처럼 자기 예측을 이어 붙일 때의 오차는 직접 줄이지 않는다.
+    # history 이후 K frame을 planner와 같은 방식(최근 history개 latent로 다음 latent 예측)으로
+    # 이어 붙여 예측한다. gate의 last_* 값을 덮어쓰므로 gate 블록 뒤에 둔다.
+    k_roll = cfg.loss.get('rollout_steps', 0)
+    if k_roll > 0:
+        assert emb.size(1) >= ctx_len + k_roll, 'data.dataset.num_steps는 history_size + rollout_steps 이상이어야 한다'
+        window = emb[:, :ctx_len]
+        errs = []
+        for k in range(k_roll):
+            next_emb = self.model.predict(window, act_emb[:, k:k + ctx_len])[:, -1:]
+            errs.append((next_emb - emb[:, ctx_len + k:ctx_len + k + 1]).pow(2).mean())
+            window = torch.cat([window[:, 1:], next_emb], dim=1)
+        output['rollout_loss'] = torch.stack(errs).mean()
+        loss = loss + cfg.loss.get('rollout_weight', 1.0) * output['rollout_loss']
+    # ---- [여러 step 예측 loss] 끝 -----------------------------------------------------
 
     output['loss'] = loss
     self.log_dict(
