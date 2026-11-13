@@ -164,6 +164,22 @@ class CFJEPA(LeWM):
         """
         lam = float(getattr(self, 'contact_cost', 0.0) or 0.0)
         pred = self.predictor
+        combine = getattr(self, 'plan_combine', None)
+        if combine and getattr(pred, 'gate_mode', 'off') != 'off':
+            # E34: gate를 켠 rollout과 끈 rollout의 cost를 같이 본다. max는 "interaction이 있어도 없어도
+            # goal에 가까운 plan"을 고른다(pessimistic). 상상 push가 유리하게 나온 plan을 CEM이 고르는 것을 막는다.
+            cost_on = history_get_cost(self, info_dict, action_candidates)
+            mode = pred.gate_mode
+            pred.gate_mode = 'off'
+            try:
+                cost_off = history_get_cost(self, info_dict, action_candidates)
+            finally:
+                pred.gate_mode = mode
+            if combine == 'max':
+                return torch.maximum(cost_on, cost_off)
+            if combine == 'mean':
+                return (cost_on + cost_off) / 2
+            raise ValueError(f'plan_combine={combine}')
         if lam <= 0 or getattr(pred, 'gate_mode', 'off') == 'off':
             return history_get_cost(self, info_dict, action_candidates)  # E26, iawm.cfjepa 참고
         alphas = []

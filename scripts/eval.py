@@ -193,6 +193,8 @@ def run(cfg: DictConfig):
             model.cost = cfg.cost
         if cfg.get("gate_mode") is not None:  # gate 모델의 α 바꾸기: learned | always | off (E12, off는 CF-JEPA 부분만)
             model.predictor.gate_mode = cfg.gate_mode
+        if cfg.get("plan_combine") is not None:  # E34: gate on/off rollout cost를 max|mean으로 합친다
+            model.plan_combine = str(cfg.plan_combine)
         if cfg.get("contact_cost") is not None:  # E29: 상상 α로 충돌 회피 cost (iawm.cfjepa_gate.CFJEPA.get_cost)
             model.contact_cost = float(cfg.contact_cost)
         config = swm.PlanConfig(**cfg.plan_config)
