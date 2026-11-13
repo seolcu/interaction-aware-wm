@@ -1205,3 +1205,80 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 **결정:** obstacle 1개로 이득이 가장 큰 `r1x`를 다음 학습 조건으로 한다. obstacle 1개 data에서는 latent가 contact 잔차를 정답 state만큼 설명했다(E10).
 
 **결과물:** Colab log는 받지 못했다(세션 종료 전 다운로드 실패). 위 표는 `outputs/e31/res/status_live.txt`의 값이다.
+
+## 2026-11-13 · E32. r1x에서 CF-JEPA, gate, resolve gate 학습 (resolve는 OOM)
+
+**목적:** E31에서 고른 `r1x`(obstacle 1개, 반지름 30) data로 CF-JEPA, 기존 gate(state 입력), resolve gate(E30)를 처음부터 학습해 planning을 비교한다.
+
+**설정**
+- data: `collect_collision.py --episodes 10000 --num-obstacles 1 --obstacle-radius 30 --name r1x` + contact 라벨. 727,377 frame, contact step 19.2%, contact 있는 episode 94.8%, goal 도달 59.5%.
+- 공통: `data=collision_tworoom_contact data.dataset.name=r1x_contact.h5 distractor.num=0 trainer.max_epochs=10`.
+- `e32_cf`: `model=cfjepa`. `e32_gate`: `model=cfjepa_gate model.predictor.gate_objective=supervised +model.int_lr=1e-3`. `e32_res`: gate + `+model.predictor.int_input=resolve`.
+- A100 1장에서 3개를 병렬로 학습했다.
+
+**결과:** `e32_res`가 28분 만에 CUDA OOM으로 죽었다(40GB에 3개 × 13GB). `e32_cf`, `e32_gate`는 10 epoch를 마쳤다. 평가 단계 전에 pipeline이 멈춰서 평가는 E33 세션에서 했다(아래 E33 표).
+
+**교훈:** A100 40GB에서 이 모델의 full 학습은 2개까지만 병렬로 돌린다.
+
+## 2026-11-13 · E33. Resolve gate 다시 학습, r1x planning 비교
+
+**목적:** E32에서 죽은 resolve gate를 다시 학습하고, `e32_cf`, `e32_gate`와 같은 조건에서 비교한다.
+
+**설정**
+- `e33_res`: E32의 `e32_res`와 같다. `e33_resb`: resolve + `model.predictor.int_depth=4 model.int_aux_weight=3.0`. A100에서 2개 병렬, 10 epoch, 약 9.5시간.
+- 평가: P2(`+obs_fix=true +plan_history=3`), `world.num_obstacles=1 eval.eval_budget=30 +world.obstacle_radius=30.0`, seed 42~49(seed당 50 episodes). oracle은 seed 42~44.
+- 진단: `analyze_gate.py`(500 episodes), `multistep_error.py --steps 5 --gate-modes learned,off`.
+
+**결과: planning** (success rate %, 평균 ± 표준오차, seed 8개. oracle은 3개)
+
+| 모델 | gate learned | gate off |
+|---|---|---|
+| oracle (정답 simulator) | aware 97.3 ± 0.7 | blind 77.3 ± 3.7 |
+| `e32_cf` CF-JEPA | 63.0 ± 2.0 | |
+| `e32_gate` (state 입력) | 59.5 ± 2.3 | 62.2 ± 1.3 |
+| `e33_res` (resolve 입력) | 59.5 ± 2.5 | 53.5 ± 2.8 |
+| `e33_resb` (resolve, 큰 h_int) | 55.2 ± 2.9 | 55.3 (seed 3개) |
+
+epoch 4 (seed 42~45): `e32_cf` 51.0, `e33_res` learned 54.0 / off 49.5, `e33_resb` 46.5 / 44.5.
+
+**결과: 예측** (`multistep_error.py`, k = 1 / 5 block 앞 z^c 오차, persistence 대비)
+
+| 모델 | non-contact k=1 | contact k=1 | contact k=5 | 상상 α AUROC k=1 / 5 |
+|---|---|---|---|---|
+| `e32_cf` | 0.027 | 0.107 | 0.233 | |
+| `e32_gate` learned | 0.032 | 0.102 | 0.221 | 0.987 / 0.942 |
+| `e33_res` learned | 0.040 | 0.109 | 0.225 | 0.990 / 0.938 |
+| `e33_res` off | 0.041 | 0.200 | 0.288 | |
+
+`analyze_gate.py`: `e33_res` α AUROC 0.979, contact z^c 오차 19.3% 감소(`e32_gate` 18.9%). `e33_resb` 26.3%.
+
+**해석**
+- **resolve gate에서 처음으로 gate를 켜는 것이 planning을 올렸다.** `e33_res`의 learned − off는 seed별로 +6, +4, +14, +2, +6, −6, +10, +12(평균 +6.0, 8개 중 7개 양수)다. 기존 gate는 켜면 2.7%p 내려갔다.
+- **하지만 모델 전체는 CF-JEPA보다 3.5%p 낮다.** 같이 학습하면서 gate를 끈 부분(encoder, g)이 나빠졌다. non-contact 오차가 0.027 → 0.040으로 늘었고, gate off 성공률이 53.5로 CF-JEPA보다 9.5%p 낮다. resolve 입력의 h_int가 contact 오차를 맡으면서 g가 contact를 덜 배운 것으로 보인다(off의 contact 오차 0.200 대 CF-JEPA 0.107).
+- 큰 h_int(`resb`)는 contact 오차를 더 줄였지만(26%) planning은 더 낮다.
+- oracle blind seed 42가 E31의 68과 달리 82다. E31은 log가 없어 원인을 확인하지 못했다.
+
+**다음 (E35):** 학습된 CF-JEPA를 고정하고 interaction module만 학습한다. gate off가 CF-JEPA와 같아지므로 gate on의 이득이 그대로 CF-JEPA 대비 이득이 된다.
+
+**결과물:** `outputs/e33/res/e33/`(git 제외), Proton `results/E33_r1x_resolve/`.
+
+## 2026-11-13 · E34. 학습 없이 planning cost 바꾸기 (e32_gate, r1x)
+
+**목적:** `e32_gate`는 one-step 예측이 좋은데(contact 오차 19% 감소, α AUROC 0.978) 켜면 planning이 내려간다. CEM이 상상한 push가 유리하게 나온 plan을 고르는 것(model exploitation)인지 본다.
+
+**설정:** E33 세션에서 학습과 같이 돌렸다. P2, r1x, seed 42~49.
+- `+plan_combine=max|mean` (`iawm.cfjepa_gate.CFJEPA.get_cost`): gate on rollout과 off rollout의 cost를 합친다. max는 "interaction이 있어도 없어도 좋은 plan"을 고른다.
+- `+contact_cost=λ` (E29): 상상 α로 충돌 회피 cost를 더한다. 정답판 `oracle_avoid`(λ = 1, seed 42~44)도 쟀다.
+
+**결과** (success rate %, seed 8개 평균)
+
+| 방법 | 성공률 |
+|---|---|
+| gate learned / off (E33) | 59.5 / 62.2 |
+| `plan_combine=max` | 58.2 ± 2.7 |
+| `plan_combine=mean` (seed 3개) | 60.0 |
+| `contact_cost=0.25` | 59.5 ± 3.0 |
+| `contact_cost=0.5` | 54.8 ± 2.3 |
+| oracle blind / avoid / aware (seed 3개) | 77.3 / 82.0 / 97.3 |
+
+**해석:** 어느 방법도 gate off나 CF-JEPA를 넘지 못했다. 정답판에서도 회피는 +4.7%p뿐이고 push 결과를 아는 aware가 +20%p다. r1x에서도 이득의 대부분은 push 결과 예측에서 나온다.
