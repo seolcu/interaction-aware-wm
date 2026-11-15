@@ -1282,3 +1282,51 @@ epoch 4 (seed 42~45): `e32_cf` 51.0, `e33_res` learned 54.0 / off 49.5, `e33_res
 | oracle blind / avoid / aware (seed 3개) | 77.3 / 82.0 / 97.3 |
 
 **해석:** 어느 방법도 gate off나 CF-JEPA를 넘지 못했다. 정답판에서도 회피는 +4.7%p뿐이고 push 결과를 아는 aware가 +20%p다. r1x에서도 이득의 대부분은 push 결과 예측에서 나온다.
+
+## 2026-11-14 · E35. 학습된 CF-JEPA를 고정하고 interaction module만 학습 (r1x)
+
+**목적:** E33에서 같이 학습하면 base(encoder, g, h)가 나빠졌다. `e32_cf`를 고정하고 interaction module(`h_int`, `int_in`, `int_out`, gate)만 학습하면 gate off가 CF-JEPA와 같아지므로, gate on의 이득이 곧 CF-JEPA 대비 이득이 된다.
+
+**설정**
+- `scripts/train.py`의 `+init_from=e32_cf/weights_epoch_10.pt +freeze_base=true`(학습 parameter 0.808M). 6 epoch, L4.
+- `e35_fres`: resolve 입력, `e35_fstate`: state 입력. 둘 다 `gate_objective=supervised`, `int_lr=1e-3`.
+- 평가: P2, r1x(`world.num_obstacles=1 eval.eval_budget=30 +world.obstacle_radius=30.0`). CF-JEPA도 같은 L4에서 다시 쟀다(`cfl4`). CEM 결과는 같은 GPU에서도 실행마다 seed당 ±4~8%p 흔들리므로 seed를 16개(42~57)로 늘렸다(seed 50~57은 E36 세션에서 쟀다).
+- log는 내려받기 실패로 잃었고 status 파일만 남았다(E36부터 재시도와 큰 파일 제외로 고쳤다).
+
+**결과** (success rate %, 평균 ± 표준오차)
+
+| 모델 | seed 42~49 | seed 50~57 | 16개 |
+|---|---|---|---|
+| `e32_cf` CF-JEPA (L4) | 61.5 ± 1.6 | 57.5 ± 2.6 | 59.5 ± 1.6 |
+| `e35_fres` epoch 6 | 63.2 | 60.5 | 61.9 ± 1.6 |
+| `e35_fres` epoch 3 | 62.8 | | |
+| `e35_fstate` epoch 6 | 60.8 ± 1.4 | | |
+
+- `e35_fres` − CF-JEPA (seed별 paired): 평균 +2.4 ± 1.5%p, 16개 중 9개 높고 5개 낮다. 유의하지 않다.
+- 예측(`multistep_error.py`, E36 세션): `e35_fres`의 contact z^c 오차는 k=1에서 0.100(off 0.107, CF-JEPA 0.107), k=5에서 0.229(0.233). non-contact는 CF-JEPA와 같다(0.027). 상상 α AUROC k=1 / 5는 0.991 / 0.936이다.
+
+**해석:** base를 고정하니 E33의 base 악화는 사라졌지만, resolve h_int가 고친 양이 작다(contact k=1 오차 6.5% 감소). planning 차이도 그만큼 작아서 noise 안에 있다.
+
+## 2026-11-15 · E36. CF-JEPA에서 시작해 gate 모델 전체를 낮은 lr로 fine-tune (r1x)
+
+**목적:** E35는 base를 완전히 고정해서 h_int가 고칠 수 있는 폭이 작았을 수 있다. base를 `e32_cf`에서 시작해 낮은 lr(1e-5)로 같이 움직이고, interaction module은 1e-3으로 학습한다.
+
+**설정:** `+init_from=e32_cf/weights_epoch_10.pt optimizer.lr=1e-5`, resolve, supervised, `int_lr=1e-3`, 3 epoch, L4 1개(`outputs/e36/e36_pipeline.sh`). epoch 1 check(seed 42~45)에서 이득이 보이지 않아 마지막 평가를 gate learned, seed 50~57로 줄였다(`outputs/e36/trim.sh`). 세션 약 4.5시간, 약 9 CU.
+
+**결과**
+
+| 모델 | 성공률 |
+|---|---|
+| CF-JEPA (L4), seed 42~45 / 50~57 | 59.0 / 57.5 ± 2.6 |
+| `e36_ft` epoch 1 learned / off, seed 42~45 | 59.0 / 61.0 |
+| `e36_ft` epoch 3 learned, seed 50~57 | 61.8 ± 2.5 |
+
+- epoch 3 − CF-JEPA (paired, seed 50~57): +4.3 ± 2.1%p, 8개 중 6개 높고 1개 낮다.
+- **하지만 h_int는 아무것도 고치지 않는다.** `analyze_gate.py`: α AUROC 0.978(gate는 contact를 잘 찾는다), 그러나 α = 1로 켰을 때 contact z^c 오차 변화가 0.05%(0.10673 → 0.10669)다. `multistep_error.py`에서도 learned와 off가 k=1~5 모두 같다(contact k=1 0.103, k=5 0.239).
+
+**해석**
+- 예측이 gate on과 off에서 같으므로, epoch 3의 +4.3%p는 gate가 아니라 base를 r1x data로 3 epoch 더 학습한 효과이거나 평가 noise다. 제안 module의 효과로 주장할 수 없다. 이를 확인하려면 gate 없는 CF-JEPA를 같은 조건으로 3 epoch 더 학습한 대조군이 필요하다.
+- base가 움직일 수 있으면 forward loss가 base 쪽에서 먼저 줄어들고, h_int의 잔차는 0 근처에 머문다. E33(처음부터 같이 학습)과 반대로, 이번에는 base가 contact를 맡았다.
+- 지금까지 gate가 CF-JEPA 대비 이득을 낸 설정은 base 고정(E35)뿐이고, 그 크기(+2.4%p)는 noise 수준이다.
+
+**결과물:** `outputs/e35/res/`, `outputs/e36/res/`(git 제외).
