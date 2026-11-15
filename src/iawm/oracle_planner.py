@@ -5,6 +5,8 @@
 
 - mode='aware': obstacle 궤적과 push를 simulator에 넣는다(완벽한 interaction 모델).
 - mode='blind': obstacle을 빼고 계획한다. "obstacle은 agent에 영향을 주지 않는다"는 CF-JEPA 가정과 같은 모델이다.
+- replan='contact' (E37): 계획한 경로가 obstacle과 처음 겹치는 block까지만 실행하고 다시 계획한다.
+  충돌 여부는 blind 경로와 obstacle 궤적이 겹치는지로 판단한다(gate α로 충돌 시점을 정하는 방법의 정답판).
 - mode='avoid' (E29): blind처럼 push는 모르지만, 충돌하는 block마다 contact_cost · d0를 더한다(d0: 지금 target까지 거리).
   push를 정확히 예측하지 않고 "충돌이 일어날지"만 알 때의 상한이다. gate α를 cost로 쓰는 방법(E29)의 정답판이다.
 
@@ -22,10 +24,13 @@ from stable_worldmodel.policy import BasePolicy
 
 class OraclePlanner(BasePolicy):
     def __init__(self, mode='aware', horizon=25, receding=25, action_block=5,
-                 samples=300, iters=30, topk=30, seed=0, contact_cost=1.0, **kwargs):
+                 samples=300, iters=30, topk=30, seed=0, contact_cost=1.0, replan='none', **kwargs):
         super().__init__(**kwargs)
         assert mode in ('aware', 'blind', 'avoid')
         self.contact_cost = contact_cost
+        assert replan in ('none', 'contact')
+        self.replan = replan
+        self.n_plans = 0  # 계획 횟수 (E37: 다시 계획한 횟수 비교)
         self.type = f'oracle_{mode}'
         self.mode = mode
         self.horizon, self.receding, self.block = horizon, receding, action_block
@@ -148,7 +153,16 @@ class OraclePlanner(BasePolicy):
         plan = mean.clamp(-1, 1)
         traj = []
         self.rollout_cost(e, plan[None], obs_traj, vel_traj, traj)
-        return plan.numpy(), torch.stack(traj).numpy()
+        traj = torch.stack(traj)
+        n_exec = self.receding
+        if self.replan == 'contact' and obs_traj.shape[1] > 0:
+            min_d = float(e.variation_space['agent']['radius'].value.item()) + e.obstacle_radius
+            hit = ((traj[:, None] - obs_traj[: traj.shape[0]]).norm(dim=-1) < min_d).any(-1)
+            if hit.any():  # 처음 겹치는 step이 속한 block의 끝까지 실행
+                t = int(hit.nonzero()[0, 0])
+                n_exec = min(n_exec, (t // self.block + 1) * self.block)
+        self.n_plans += 1
+        return plan.numpy()[:n_exec], traj.numpy()[:n_exec]
 
     def get_action(self, info_dict, **kwargs):
         n = len(self.queue)
@@ -162,6 +176,6 @@ class OraclePlanner(BasePolicy):
                 self.sim_err.append(float(np.linalg.norm(e.agent_position.numpy() - self.expect[i])))
             if not self.queue[i]:
                 plan, traj = self.plan(e)
-                self.queue[i] = list(zip(plan[: self.receding], traj[: self.receding]))
+                self.queue[i] = list(zip(plan[: self.receding], traj[: self.receding]))  # plan()이 이미 자른다
             out[i], self.expect[i] = self.queue[i].pop(0)
         return out

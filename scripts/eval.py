@@ -8,6 +8,7 @@
 - `+obs_fix=true`: 첫 관측을 dataset frame 대신 실제 env 화면으로 쓴다(E26, Collision env에서 필요).
 - `+plan_history=3`: planning에 과거 frame 3장(frameskip 간격)과 그 사이 action을 넣는다(E26, Collision env 전용).
 - `policy=oracle_aware|oracle_blind|oracle_avoid`: 학습된 모델 대신 정답 simulator로 CEM 계획한다(E28, Collision env 진단 전용).
+- `+replan=contact` (oracle) / `+replan=gate` (gate 모델): 충돌이 예상되는 block까지만 실행하고 다시 계획한다(E37).
 - `+contact_cost=λ`: gate 모델의 상상 α로 충돌 회피 cost를 더한다(E29). oracle_avoid에서는 정답 충돌에 같은 cost를 준다.
 
 사용 예:
@@ -116,6 +117,84 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool):
     return HistoryPolicy
 
 
+def wrap_solver_count_and_gate(policy, model, tau):
+    """E37: 계획 횟수를 세고, tau가 있으면 gate α로 실행 구간을 자른다(gate-triggered replanning).
+
+    CEM이 고른 계획(최종 mean)을 한 번 더 상상 rollout해서 block마다 gate α를 읽는다. history 3 frame +
+    후보 5 block이면 predictor를 5번 부르고, k번째 호출의 α는 block k를 실행하는 동안의 contact 확률이다.
+    α가 처음 tau를 넘는 block까지만 실행하고 그 다음 step에서 실제 관측으로 다시 계획한다(없으면 전부 실행).
+    """
+    solver = policy.solver
+    orig_solve = solver.solve
+    policy.n_plans = 0
+    policy.n_exec_log = []
+
+    def plan_alpha(info_dict, actions):
+        pred = model.predictor
+        alphas, orig = [], pred.forward
+
+        def forward_rec(emb, act_emb):
+            out = orig(emb, act_emb)
+            alphas.append(pred.last_alpha[:, -1, 0].float())
+            return out
+
+        infos = {}
+        for k, v in info_dict.items():
+            if torch.is_tensor(v):
+                v = v.to(device=solver.device, dtype=solver.dtype if v.is_floating_point() else None).unsqueeze(1)
+            elif isinstance(v, np.ndarray):
+                v = v[:, None]
+            infos[k] = v
+        pred.forward = forward_rec
+        try:
+            with torch.no_grad():
+                model.get_cost(infos, actions[:, None].to(device=solver.device, dtype=solver.dtype))
+        finally:
+            del pred.forward
+        return torch.stack(alphas, dim=-1).cpu()  # (B, K)
+
+    def solve(info_dict, init_action=None):
+        out = orig_solve(info_dict, init_action)
+        B, K = out['actions'].shape[:2]
+        policy.n_plans += B
+        n_exec = torch.full((B,), K, dtype=torch.long)
+        if tau is not None:
+            a = plan_alpha(info_dict, out['actions'])[:, :K]
+            over = a > tau
+            first = torch.where(over.any(1), over.float().argmax(1), torch.full((B,), K - 1))
+            n_exec = first + 1
+        policy._pending_exec = n_exec.tolist()
+        policy.n_exec_log += policy._pending_exec
+        return out
+
+    solver.solve = solve
+
+
+def make_gate_replan_policy(base_cls):
+    """solver가 정한 실행 block 수(_pending_exec)만큼만 action buffer를 남긴다 (E37)."""
+
+    class GateReplanPolicy(base_cls):
+        def get_action(self, info_dict, **kwargs):
+            self._pending_exec = None
+            n = len(self._action_buffer)
+            flush = info_dict.get('_needs_flush')
+            flush = np.zeros(n, bool) if flush is None else np.asarray(flush, bool)
+            term = info_dict.get('terminated')
+            dead = np.zeros(n, bool) if term is None else np.asarray(term, bool)
+            # WorldModelPolicy.get_action과 같은 규칙: buffer가 비었거나 flush된, 살아 있는 env만 다시 계획한다
+            fresh = [i for i in range(n) if (len(self._action_buffer[i]) == 0 or flush[i]) and not dead[i]]
+            action = super().get_action(info_dict, **kwargs)
+            if self._pending_exec is not None:
+                assert len(fresh) == len(self._pending_exec), (len(fresh), len(self._pending_exec))
+                blk = self.cfg.action_block
+                for i, k in zip(fresh, self._pending_exec):
+                    while len(self._action_buffer[i]) > k * blk - 1:
+                        self._action_buffer[i].pop()
+            return action
+
+    return GateReplanPolicy
+
+
 def get_episodes_length(dataset, episodes):
     col_name = "episode_idx" if "episode_idx" in dataset.column_names else "ep_idx"
 
@@ -182,6 +261,7 @@ def run(cfg: DictConfig):
             horizon=pc.horizon * pc.action_block, receding=pc.receding_horizon * pc.action_block,
             action_block=pc.action_block, samples=cfg.solver.num_samples, iters=cfg.solver.n_steps,
             topk=cfg.solver.topk, seed=cfg.seed, contact_cost=float(cfg.get("contact_cost", 1.0)),
+            replan=str(cfg.get("replan", "none")),
         )
     elif policy != "random":
         model = swm.wm.utils.load_pretrained(cfg.policy)
@@ -206,9 +286,13 @@ def run(cfg: DictConfig):
             policy_cls = make_history_policy(
                 policy_cls, plan_history, cfg.plan_config.action_block, obs_fix
             )
+        replan = str(cfg.get("replan", "none"))
+        if replan == "gate":  # E37: gate α가 tau를 넘는 block까지만 실행하고 다시 계획
+            policy_cls = make_gate_replan_policy(policy_cls)
         policy = policy_cls(
             solver=solver, config=config, process=process, transform=transform
         )
+        wrap_solver_count_and_gate(policy, model, float(cfg.get("replan_tau", 0.5)) if replan == "gate" else None)
 
     else:
         policy = swm.policy.RandomPolicy()
@@ -263,6 +347,10 @@ def run(cfg: DictConfig):
     end_time = time.time()
     
     print(metrics)
+    if getattr(policy, "n_plans", None) is not None:  # E37: 계획 횟수
+        print(f"[plans] total {policy.n_plans} per_episode {policy.n_plans / cfg.eval.num_eval:.2f}")
+        if getattr(policy, "n_exec_log", None):
+            print(f"[plans] executed blocks per plan mean {np.mean(policy.n_exec_log):.2f} hist {np.bincount(policy.n_exec_log, minlength=6)[1:].tolist()}")
     if getattr(policy, "sim_err", None):
         err = np.array(policy.sim_err)
         print(f"[oracle] sim error mean {err.mean():.4f} p50 {np.median(err):.4f} p99 {np.quantile(err, .99):.4f} "
