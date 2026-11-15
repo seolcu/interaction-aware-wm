@@ -1330,3 +1330,45 @@ epoch 4 (seed 42~45): `e32_cf` 51.0, `e33_res` learned 54.0 / off 49.5, `e33_res
 - 지금까지 gate가 CF-JEPA 대비 이득을 낸 설정은 base 고정(E35)뿐이고, 그 크기(+2.4%p)는 noise 수준이다.
 
 **결과물:** `outputs/e35/res/`, `outputs/e36/res/`(git 제외).
+
+## 2026-11-15 · E37. Gate α로 다시 계획할 시점 정하기 (gate-triggered replanning, 학습 없음)
+
+**목적:** E25~E36에서 gate는 충돌을 잘 찾지만(AUROC 0.98) push 결과는 잘 맞히지 못했다. 지금 평가는 한 번 세운 계획을 25 step(5 block) 그대로 실행해서 push 예측 오차가 그대로 실패로 이어진다. gate α가 충돌을 예상한 block까지만 실행하고 실제 관측으로 다시 계획하면, gate가 잘하는 것(감지)만 쓰고 못하는 것(push 예측)은 관측으로 대신할 수 있는지 본다.
+
+**구현** (`scripts/eval.py`, `src/iawm/oracle_planner.py`)
+- `+replan=contact` (정답 simulator): blind 계획 경로가 obstacle과 처음 겹치는 block까지만 실행한다.
+- `+replan=gate +replan_tau=τ`: CEM이 고른 계획을 한 번 더 상상 rollout해서 block마다 α를 읽고, 처음 τ를 넘는 block까지만 실행한다.
+- `+replan=random +replan_p=p`: 대조군. block마다 확률 p로 끊는다.
+- `plan_config.receding_horizon=k`: k block마다 다시 계획(고정 간격 대조군).
+- 모든 평가에서 계획 횟수(`[plans]`)를 기록한다.
+
+**설정:** r1x, P2, L4 1개. 정답 simulator는 seed 42~44, 학습 모델은 seed 42~49. gate 모델은 `e35_fres`(base가 `e32_cf`와 같다), 대조군은 `e32_cf`.
+
+**결과** (success rate %, 평균 ± 표준오차. 계획 횟수는 episode당)
+
+| 방법 | seed | 성공률 | 계획 횟수 |
+|---|---|---|---|
+| 정답 blind, 25 step 고정 | 3 | 70.0 ± 4.6 | 2.00 |
+| 정답 blind, 충돌 직전에만 다시 계획 | 3 | 92.7 ± 1.3 | 4.05 |
+| 정답 blind, 5 step마다 | 3 | 95.3 ± 2.9 | 6.00 |
+| 정답 aware, 25 step 고정 | 3 | 96.7 ± 1.3 | 2.00 |
+| CF-JEPA, 25 step 고정 (E35, 16개) | 16 | 59.5 ± 1.6 | 2 |
+| CF-JEPA, 10 step마다 | 4 | 74.5 ± 3.2 | 2.06 |
+| CF-JEPA, 5 step마다 | 8 | 78.8 ± 1.5 | 3.35 |
+| CF-JEPA, 무작위 p = 0.3 | 4 | 67.0 ± 1.9 | 1.96 |
+| CF-JEPA, 무작위 p = 0.6 | 5 | **79.2 ± 2.3** | 2.45 |
+| gate τ = 0.5 | 8 | 77.5 ± 1.2 | 2.89 |
+| gate τ = 0.9 | 5 | 74.0 ± 1.7 | 2.62 |
+
+- gate τ = 0.9 − 무작위 p = 0.6 (paired, seed 42~46): −12, −2, −4, −8, 0. gate가 계획을 더 하고도 낮다.
+- gate는 계획의 약 75%(τ = 0.5) / 65%(τ = 0.9)를 첫 block에서 끊었다. 나머지는 대부분 5 block을 모두 실행했다.
+
+**해석**
+- **다시 계획하기만 해도 성공률이 60에서 75~79로 오른다.** 정답 simulator에서도 다시 계획하면 blind가 aware에 거의 닿는다(95.3 대 96.7). 25 step 고정 실행 평가는 사실상 open-loop라 interaction 예측의 비중을 크게 만든다.
+- **gate로 시점을 고르는 것은 무작위보다 낫지 않다.** 정답 simulator에서는 충돌 직전 재계획이 통했지만(92.7), 학습 모델은 충돌 밖의 일반 예측 오차도 커서 충돌만 골라 고치는 것으로는 부족하다. gate는 obstacle이 가까우면 바로 끊고, 충돌이 없다고 보면 25 step을 그대로 실행해 일반 오차를 고칠 기회를 놓친다.
+- 계획 횟수가 같으면 성공률은 시점보다 횟수와 간격의 고름에 좌우된다.
+- seed 46 이후 phase B는 결론이 분명해서 중단했다.
+
+**사고:** 수동 중단에 쓴 `pkill -f`가 `colab exec` 자신의 shell까지 죽여 이후 exec가 멈췄다. watcher가 완료를 보지 못해 세션이 약 3.5시간 빈 채로 돌았고(약 7 CU) log 다운로드도 실패했다. 위 표는 `outputs/e37/res/status_live.txt`와 직접 확인한 status 값이다. E37 전체 약 12 CU.
+
+**결과물:** `outputs/e37/res/status_live.txt`(git 제외).
