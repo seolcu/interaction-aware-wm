@@ -8,7 +8,8 @@
 - `+obs_fix=true`: 첫 관측을 dataset frame 대신 실제 env 화면으로 쓴다(E26, Collision env에서 필요).
 - `+plan_history=3`: planning에 과거 frame 3장(frameskip 간격)과 그 사이 action을 넣는다(E26, Collision env 전용).
 - `policy=oracle_aware|oracle_blind|oracle_avoid`: 학습된 모델 대신 정답 simulator로 CEM 계획한다(E28, Collision env 진단 전용).
-- `+replan=contact` (oracle) / `+replan=gate` (gate 모델): 충돌이 예상되는 block까지만 실행하고 다시 계획한다(E37).
+- `+replan=contact` (oracle) / `+replan=gate +replan_tau=τ` (gate 모델) /
+  `+replan=random +replan_p=p` (대조군: block마다 확률 p로 끊는다): 충돌이 예상되는 block까지만 실행하고 다시 계획한다(E37).
 - `+contact_cost=λ`: gate 모델의 상상 α로 충돌 회피 cost를 더한다(E29). oracle_avoid에서는 정답 충돌에 같은 cost를 준다.
 
 사용 예:
@@ -117,7 +118,7 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool):
     return HistoryPolicy
 
 
-def wrap_solver_count_and_gate(policy, model, tau):
+def wrap_solver_count_and_gate(policy, model, tau, rand_p=None, seed=0):
     """E37: 계획 횟수를 세고, tau가 있으면 gate α로 실행 구간을 자른다(gate-triggered replanning).
 
     CEM이 고른 계획(최종 mean)을 한 번 더 상상 rollout해서 block마다 gate α를 읽는다. history 3 frame +
@@ -126,6 +127,7 @@ def wrap_solver_count_and_gate(policy, model, tau):
     """
     solver = policy.solver
     orig_solve = solver.solve
+    rng = np.random.default_rng(seed + 12345)
     policy.n_plans = 0
     policy.n_exec_log = []
 
@@ -161,6 +163,10 @@ def wrap_solver_count_and_gate(policy, model, tau):
         if tau is not None:
             a = plan_alpha(info_dict, out['actions'])[:, :K]
             over = a > tau
+            first = torch.where(over.any(1), over.float().argmax(1), torch.full((B,), K - 1))
+            n_exec = first + 1
+        elif rand_p is not None:  # 대조군: block마다 확률 rand_p로 끊는다 (gate와 같은 계획 횟수를 무작위 시점에)
+            over = torch.as_tensor(rng.random((B, K)) < rand_p)
             first = torch.where(over.any(1), over.float().argmax(1), torch.full((B,), K - 1))
             n_exec = first + 1
         policy._pending_exec = n_exec.tolist()
@@ -287,12 +293,13 @@ def run(cfg: DictConfig):
                 policy_cls, plan_history, cfg.plan_config.action_block, obs_fix
             )
         replan = str(cfg.get("replan", "none"))
-        if replan == "gate":  # E37: gate α가 tau를 넘는 block까지만 실행하고 다시 계획
+        if replan in ("gate", "random"):  # E37: gate α가 tau를 넘는 block까지만 실행하고 다시 계획
             policy_cls = make_gate_replan_policy(policy_cls)
         policy = policy_cls(
             solver=solver, config=config, process=process, transform=transform
         )
-        wrap_solver_count_and_gate(policy, model, float(cfg.get("replan_tau", 0.5)) if replan == "gate" else None)
+        wrap_solver_count_and_gate(policy, model, float(cfg.get("replan_tau", 0.5)) if replan == "gate" else None,
+                                   float(cfg.get("replan_p", 0.5)) if replan == "random" else None, int(cfg.seed))
 
     else:
         policy = swm.policy.RandomPolicy()
