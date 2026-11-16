@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# 가짜 colab: $HOME/fake/ 아래 파일로 동작을 정한다. 호출은 calls에 남긴다.
+F="$HOME/fake"; echo "$*" >> "$F/calls"
+case "$1" in
+  sessions)
+    [ -f "$F/listfail" ] && { echo "auth error"; exit 1; }
+    if [ -s "$F/active" ]; then while read -r n; do echo "[$n] https://x  L4"; done < "$F/active"; else echo "[colab] No active sessions found on server."; fi;;
+  usage) echo "Current balance: $(cat "$F/balance" 2>/dev/null || echo 100) compute units";;
+  stop)
+    [ "$2" = "-s" ] || { : > "$F/active"; exit 0; }
+    [ -f "$F/stopfail" ] && exit 1
+    grep -vx "$3" "$F/active" > "$F/active.tmp"; mv "$F/active.tmp" "$F/active";;
+  exec)
+    cat > /dev/null   # stdin을 읽는 도구를 흉내 낸다 (while-read 루프 버그 재현용)
+    file=""; while [ $# -gt 0 ]; do [ "$1" = "-f" ] && file=$2; shift; done
+    mode=$(cat "$F/exec_mode" 2>/dev/null || echo ok)
+    [ "$mode" = hang ] && sleep 1000
+    [ "$mode" = empty ] && exit 0
+    if grep -q "GUARD_PROBE" "$file"; then cat "$F/probe_out" 2>/dev/null
+    elif grep -q "SELFSTOP" "$file"; then echo "SELFSTOP armed $(grep -o '^SECONDS = [0-9]*' "$file") idle $(grep -o '^IDLE_MIN = [0-9]*' "$file")"; fi;;
+esac
+exit 0

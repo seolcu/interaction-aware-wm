@@ -2,46 +2,88 @@
 # colab-guard: Colab 세션 낭비를 구조적으로 막는다 (2026-11-16).
 #   reg <name> <hours> [save_script]
 #                        세션을 등록하고 종료 기한(지금 + hours)을 건다. 하루 한도 초과 상태면 거부한다.
-#                        save_script가 있으면 기한으로 끄기 전에 `bash save_script <name>`(최대 20분)으로 결과를 먼저 받는다.
+#                        save_script가 있으면 세션을 끄기 전에 `bash save_script <name>`(최대 10분)으로 결과를 먼저 받는다.
 #                        다시 reg하면 기한을 연장한다(save_script를 생략하면 기존 것을 유지).
 #   unreg <name>         등록을 지운다.
 #   list                 등록된 세션과 남은 시간.
 #   sweep                (systemd timer, 15분마다) 기한 30분 전에 경고하고, 기한이 지나면 결과를 저장한 뒤
 #                        이름으로 끄고 확인한다. 미등록 세션은 끄지 않고 알린다.
+#                        등록 세션이 쉬고 있거나(GPU와 CPU가 2번 연속 idle) 응답이 없으면(3번 연속) 저장 후 끈다.
 #                        하루 지출이 한도를 넘으면 돌고 있는 세션은 두고(작업 손실 방지) 새 등록만 막는다.
+#   hold <name> / unhold <name>
+#                        진행 감시(idle, 무응답)를 끄거나 다시 켠다. 기한은 그대로 적용된다.
 #   stop-hook            (Claude Code Stop hook) 미등록 또는 기한 지난 세션이 켜져 있으면 응답 종료를 막는다.
 #   bash-hook            (Claude Code PreToolUse Bash hook) 위험한 명령 패턴을 막는다.
 # 세션을 "전부" 끄는 동작은 없다. 항상 이름을 지정한다.
 #
 # 설치(선택, 사람마다 자기 컴퓨터에서): cp scripts/colab/colab-guard ~/.local/bin/ && cp scripts/colab/selfstop.py ~/.config/colab-guard/
 #   15분 sweep은 cron이나 systemd user timer로 `colab-guard sweep`을 돌린다. 하루 한도는 COLAB_GUARD_DAILY_CAP(기본 20 CU).
+#   systemd service로 돌리면 TimeoutStartSec을 1500 이상으로 둔다(저장 10분 + 종료 확인이 끝나기 전에 죽지 않게).
 #   Claude Code hook으로 쓰려면 .claude/settings.local.json의 Stop에 `colab-guard stop-hook`,
 #   PreToolUse(Bash, Write|Edit)에 `colab-guard bash-hook`을 넣는다.
 set -uo pipefail
 export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 D="$HOME/.config/colab-guard"; mkdir -p "$D"
 REG="$D/sessions"; LEDGER="$D/ledger"; LOG="$D/guard.log"; touch "$REG" "$LEDGER"
-CAP="${COLAB_GUARD_DAILY_CAP:-20}"   # 하루(로컬 자정 기준) CU 지출 한도
-now=$(date +%s)
+CAP="${COLAB_GUARD_DAILY_CAP:-20}"               # 하루(로컬 자정 기준) CU 지출 한도
+T_SAVE="${COLAB_GUARD_SAVE_MAX:-600}"            # 저장 script 최대 시간(초). service TimeoutStartSec보다 충분히 작아야 한다
+T_PROBE="${COLAB_GUARD_PROBE_MAX:-90}"           # 진행 확인 exec 최대 시간(초)
+IDLE_SWEEPS="${COLAB_GUARD_IDLE_SWEEPS:-2}"      # 연속 idle sweep이 이만큼이면 끈다 (15분 간격이면 약 30분)
+NORESP_SWEEPS="${COLAB_GUARD_NORESP_SWEEPS:-3}"  # 연속 무응답 sweep이 이만큼이면 끈다 (약 45분)
+IDLE_LOAD="${COLAB_GUARD_IDLE_LOAD:-0.8}"        # 5분 load 평균이 이보다 낮고 GPU가 5% 미만이면 idle. 11/16 실측: 쉬는 VM 0.35~0.5, 프로세스 하나만 일해도 1.0 이상
+GRACE="${COLAB_GUARD_GRACE:-2400}"               # 첫 등록 뒤 이 시간(초) 동안은 진행 감시를 하지 않는다 (세션 생성, setup, upload)
+now=$(date +%s); STOPPED=""
 log(){ echo "$(date '+%m/%d %H:%M') $*" >> "$LOG"; }
 alert(){ log "ALERT $*"; echo "$(date '+%m/%d %H:%M') $*" >> "$D/alerts"; notify-send -u critical "colab-guard" "$*" 2>/dev/null || true; }
 
 # 켜진 세션 이름 목록. 조회 실패면 return 1 (빈 목록과 구분한다)
 active(){
-  local out; out=$(timeout "${1:-60}" ${COLAB_BIN:-colab} sessions 2>&1) || return 1
+  local out; out=$(timeout "${1:-60}" ${COLAB_BIN:-colab} sessions 2>&1 </dev/null) || return 1
   if echo "$out" | grep -q "No active sessions"; then return 0; fi
   echo "$out" | grep -o '^\[[A-Za-z0-9_-]*\]' | tr -d '[]' | grep -vx colab
   echo "$out" | grep -q '^\[[A-Za-z0-9_-]*\]' || return 1
 }
 deadline_of(){ awk -v n="$1" '$1==n{print $2}' "$REG" | tail -1; }
 saver_of(){ awk -v n="$1" '$1==n{print $3}' "$REG" | tail -1; }
+drop_reg(){ grep -v "^$1 " "$REG" > "$REG.tmp"; mv "$REG.tmp" "$REG"; }
+forget(){ rm -f "$D/born_$1" "$D/idle_$1" "$D/noresp_$1" "$D/saved_$1" "$D/lost_alerted_$1" "$D/noidle_$1" "$D"/warned_"$1"_*; }
+bump(){ local c; c=$(( $(cat "$1" 2>/dev/null || echo 0) + 1 )); echo "$c" > "$1"; echo "$c"; }
 stop_named(){  # 이름으로 끄고 확인. 성공 0
   local s=$1
-  timeout 120 colab stop -s "$s" >/dev/null 2>&1
-  sleep 5
+  timeout 120 colab stop -s "$s" >/dev/null 2>&1 </dev/null
+  sleep "${COLAB_GUARD_STOP_WAIT:-5}"
   local a; a=$(active 60) || { log "stop $s: could not verify"; return 1; }
   if echo "$a" | grep -qx "$s"; then log "stop $s: STILL ACTIVE"; return 1; fi
   log "stopped $s (verified)"; return 0
+}
+save_and_stop(){  # $1 name $2 saver $3 이유. 저장은 한 번만 시도한다: 저장 중에 sweep이 죽어도 다음 sweep은 바로 끈다.
+  local n=$1 sv=$2 why=$3 saved="nothing to save"
+  if [ -n "$sv" ] && [ ! -f "$D/saved_$n" ]; then
+    touch "$D/saved_$n"; log "saving $n with $sv ($why)"
+    if timeout "$T_SAVE" bash "$sv" "$n" >> "$LOG" 2>&1 </dev/null; then saved="saved via $(basename "$sv")"; else saved="SAVE FAILED"; fi
+    log "save $n: $saved"
+  elif [ -n "$sv" ]; then saved="save already attempted"; fi
+  if stop_named "$n"; then alert "$why: stopped session $n ($saved)"; drop_reg "$n"; forget "$n"; STOPPED="$STOPPED $n"
+  else alert "$why but FAILED to stop $n ($saved); stop it by hand: colab stop -s $n"; fi
+}
+probe(){  # Colab 안의 GPU 사용률(5초 중 최대), 5분 load 평균, 자동 반납 thread 유무. 응답이 없으면 빈 문자열
+  local tmp out; tmp=$(mktemp --suffix=.py)
+  cat > "$tmp" <<'PY'
+import subprocess, threading, time
+vals = []
+for _ in range(5):
+    try:
+        o = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu', '--format=csv,noheader,nounits'],
+                           capture_output=True, text=True, timeout=10).stdout
+        vals.append(max(int(x) for x in o.split()))
+    except Exception:
+        pass
+    time.sleep(1)
+print('GUARD_PROBE gpu=%d load5=%s armed=%d' % (max(vals) if vals else -1, open('/proc/loadavg').read().split()[1],
+                                                 int(any(t.name == 'selfstop' for t in threading.enumerate()))))
+PY
+  out=$(timeout "$T_PROBE" colab exec -s "$1" -f "$tmp" --timeout 60 2>&1 </dev/null | grep -a -o 'GUARD_PROBE gpu=[-0-9]* load5=[0-9.]* armed=[01]' | tail -1)
+  rm -f "$tmp"; echo "$out"
 }
 spent_today(){  # 오늘 첫 기록 대비 지출 (충전으로 늘면 0)
   local today; today=$(date +%Y-%m-%d)
@@ -51,53 +93,91 @@ spent_today(){  # 오늘 첫 기록 대비 지출 (충전으로 늘면 0)
 case "${1:-}" in
   reg)
     name=${2:?name}; hours=${3:?hours}; saver=${4:-$(saver_of "$name")}
+    echo "$name" | grep -qE '^[A-Za-z0-9_-]+$' || { echo "session name must match [A-Za-z0-9_-]+ (the session list parser cannot see other names): $name" >&2; exit 1; }
+    [ "$name" = colab ] && { echo "session name 'colab' is reserved (CLI notice lines look like it)" >&2; exit 1; }
+    awk -v h="$hours" 'BEGIN{exit !(h+0>0 && h+0<=24)}' || { echo "hours must be a number in (0, 24]: $hours" >&2; exit 1; }
     if [ -n "$saver" ]; then saver=$(readlink -f "$saver"); [ -f "$saver" ] || { echo "save script not found: $saver" >&2; exit 1; }; fi
     # 하루 한도를 넘었어도 이미 등록된 세션의 연장은 허용한다(돌고 있는 작업을 날리지 않는다).
     if [ -f "$D/budget_block_$(date +%Y-%m-%d)" ] && ! grep -q "^$name " "$REG"; then
       echo "REFUSED: daily CU cap ($CAP) exceeded today; remove $D/budget_block_$(date +%Y-%m-%d) only with the user's approval" >&2; exit 1
     fi
     dl=$(( now + $(awk -v h="$hours" 'BEGIN{printf "%d", h*3600}') ))
-    grep -v "^$name " "$REG" > "$REG.tmp"; echo "$name $dl $saver" >> "$REG.tmp"; mv "$REG.tmp" "$REG"
+    grep -q "^$name " "$REG" || { forget "$name"; touch "$D/born_$name"; }   # 새 등록: 이전 상태를 지우고 grace를 시작한다
+    rm -f "$D/idle_$name" "$D/noresp_$name" "$D/saved_$name" "$D/lost_alerted_$name"
+    drop_reg "$name"; echo "$name $dl $saver" >> "$REG"
     log "reg $name deadline $(date -d @$dl '+%m/%d %H:%M') saver=${saver:-none}"; echo "registered $name until $(date -d @$dl '+%m/%d %H:%M') saver=${saver:-none}"
     # 이미 켜진 세션이면 Colab 쪽 자동 반납 타이머도 새 기한에 맞춘다(연장)
     if a=$(active 30) && echo "$a" | grep -qx "$name"; then "$0" arm "$name"; fi;;
   arm)
-    # Colab 쪽 이중 장치: kernel 안 타이머가 (기한 + 30분)에 runtime을 스스로 반납한다. 로컬 컴퓨터가 꺼져 있어도 꺼진다.
-    # 로컬 sweep이 기한에 결과를 저장하고 먼저 끄므로, 이 타이머는 로컬이 멈췄을 때만 실제로 작동한다.
+    # Colab 쪽 이중 장치: kernel 안 타이머가 (기한 + 30분)에, 또는 90분 연속 idle이면 runtime을 스스로 반납한다.
+    # 로컬 컴퓨터가 꺼져 있어도 꺼진다. 로컬 sweep이 결과를 저장하고 먼저 끄므로, 이 타이머는 로컬이 멈췄을 때만 실제로 작동한다.
     name=${2:?name}; dl=$(deadline_of "$name"); [ -n "$dl" ] || { echo "not registered: $name" >&2; exit 1; }
     secs=$(( dl - now + 1800 )); [ $secs -lt 600 ] && secs=600
+    idle=${COLAB_GUARD_COLAB_IDLE_MIN:-90}; [ -f "$D/noidle_$name" ] && idle=0
     tmp=$(mktemp --suffix=.py); SS="$D/selfstop.py"; [ -f "$SS" ] || SS="$(dirname "$(readlink -f "$0")")/selfstop.py"
-    sed "s/^SECONDS = .*/SECONDS = $secs/" "$SS" > "$tmp"
-    out=$(timeout 300 colab exec -s "$name" -f "$tmp" --timeout 120 2>&1 | grep -a "SELFSTOP armed"); rm -f "$tmp"
+    sed -e "s/^SECONDS = .*/SECONDS = $secs/" -e "s/^IDLE_MIN = .*/IDLE_MIN = $idle/" "$SS" > "$tmp"
+    out=$(timeout 300 colab exec -s "$name" -f "$tmp" --timeout 120 2>&1 </dev/null | grep -a "SELFSTOP armed"); rm -f "$tmp"
     if [ -n "$out" ]; then log "arm $name: $out"; echo "$out"; else alert "FAILED to arm Colab-side self-stop for $name"; exit 1; fi;;
   unreg)
-    grep -v "^${2:?name} " "$REG" > "$REG.tmp"; mv "$REG.tmp" "$REG"; log "unreg $2";;
+    drop_reg "${2:?name}"; forget "$2"; log "unreg $2";;
+  hold)
+    grep -q "^${2:?name} " "$REG" || { echo "not registered: $2" >&2; exit 1; }
+    touch "$D/noidle_$2"; rm -f "$D/idle_$2" "$D/noresp_$2"; log "hold $2 (progress watch off; deadline still applies)"
+    if a=$(active 30) && echo "$a" | grep -qx "$2"; then "$0" arm "$2"; fi;;
+  unhold)
+    rm -f "$D/noidle_${2:?name}"; log "unhold $2"
+    if a=$(active 30) && echo "$a" | grep -qx "$2"; then "$0" arm "$2"; fi;;
   list)
-    while read -r n dl sv; do [ -n "$n" ] && echo "$n saver=${sv:-none} until $(date -d @$dl '+%m/%d %H:%M') ($(( (dl-now)/60 )) min left)"; done < "$REG";;
+    while read -r n dl sv; do [ -n "$n" ] && echo "$n saver=${sv:-none} until $(date -d @$dl '+%m/%d %H:%M') ($(( (dl-now)/60 )) min left)$([ -f "$D/noidle_$n" ] && echo ' [hold]')"; done < "$REG";;
   sweep)
     a=$(active 90); ok=$?
-    bal=$(timeout 60 colab usage 2>/dev/null | grep -o 'Current balance: [0-9.]*' | grep -o '[0-9.]*$')
+    bal=$(timeout 60 colab usage 2>/dev/null </dev/null | grep -o 'Current balance: [0-9.]*' | grep -o '[0-9.]*$')
     [ -n "$bal" ] && echo "$(date +%Y-%m-%d) $now $bal" >> "$LEDGER"
-    [ $ok -ne 0 ] && { log "sweep: session list failed"; exit 0; }
-    # 1) 기한 지난 등록 세션
-    while read -r n dl sv; do
+    if [ $ok -ne 0 ]; then
+      # 조회가 계속 실패하면(로그인 만료, 네트워크) 기한을 지킬 수 없다. 등록 세션이 있으면 알린다.
+      c=$(bump "$D/listfail"); log "sweep: session list failed ($c in a row)"
+      [ -s "$REG" ] && [ $(( c % 4 )) -eq 3 ] && alert "cannot list Colab sessions ($c sweeps in a row) while sessions are registered: deadlines are NOT being enforced locally; check 'colab sessions' by hand"
+      exit 0
+    fi
+    rm -f "$D/listfail"
+    # 1) 등록 세션: 기한, 진행 감시. 안에서 부르는 명령이 등록 파일을 stdin으로 읽어 버리지 않게 fd 3으로 읽는다.
+    while read -r n dl sv <&3; do
       [ -z "$n" ] && continue
       if ! echo "$a" | grep -qx "$n"; then
-        [ $now -gt $dl ] && { grep -v "^$n " "$REG" > "$REG.tmp"; mv "$REG.tmp" "$REG"; log "unreg $n (inactive, past deadline)"; }
+        if [ $now -gt $dl ]; then drop_reg "$n"; forget "$n"; log "unreg $n (inactive, past deadline)"
+        elif [ -f "$D/born_$n" ] && [ $(( now - $(stat -c %Y "$D/born_$n") )) -gt 1200 ] && [ ! -f "$D/lost_alerted_$n" ]; then
+          touch "$D/lost_alerted_$n"; alert "registered session $n is not active (never created, finished, or lost)"
+        fi
         continue
       fi
-      if [ $now -gt $dl ]; then
-        if [ -n "${sv:-}" ]; then
-          log "saving $n with $sv"; timeout 1200 bash "$sv" "$n" >> "$LOG" 2>&1; log "save $n exit $?"
-        fi
-        stop_named "$n" && alert "deadline passed: saved${sv:+ (via $(basename "$sv"))} and stopped session $n" || alert "deadline passed but FAILED to stop $n"
-      elif [ $(( dl - now )) -le 1800 ] && [ ! -f "$D/warned_${n}_$dl" ]; then
+      if [ $now -gt $dl ]; then save_and_stop "$n" "${sv:-}" "deadline passed"; continue; fi
+      if [ $(( dl - now )) -le 1800 ] && [ ! -f "$D/warned_${n}_$dl" ]; then
         touch "$D/warned_${n}_$dl"; alert "session $n reaches its deadline at $(date -d @$dl '+%H:%M'); extend with 'colab-guard reg $n <hours>' if it is still making progress"
       fi
-    done < "$REG"
+      # 진행 감시 (E36: pipeline이 시작되지 않은 채 24시간, E37: exec가 멈춘 채 3.5시간 빈 세션이 돌았다)
+      [ -f "$D/noidle_$n" ] && continue
+      [ -f "$D/born_$n" ] && [ $(( now - $(stat -c %Y "$D/born_$n") )) -lt "$GRACE" ] && continue
+      p=$(probe "$n")
+      if [ -z "$p" ]; then
+        c=$(bump "$D/noresp_$n"); log "probe $n: no response ($c)"
+        [ "$c" -ge "$NORESP_SWEEPS" ] && save_and_stop "$n" "${sv:-}" "no response to exec for $c sweeps (stalled)"
+        continue
+      fi
+      rm -f "$D/noresp_$n"
+      gpu=$(echo "$p" | sed 's/.*gpu=\([-0-9]*\).*/\1/'); l5=$(echo "$p" | sed 's/.*load5=\([0-9.]*\).*/\1/')
+      if awk -v g="$gpu" -v l="$l5" -v t="$IDLE_LOAD" 'BEGIN{exit !(g<5 && l<t)}'; then
+        c=$(bump "$D/idle_$n"); log "probe $n: IDLE ($c) $p"
+        [ "$c" -ge "$IDLE_SWEEPS" ] && { save_and_stop "$n" "${sv:-}" "idle for $c sweeps (gpu=$gpu% load5=$l5)"; continue; }
+      else
+        rm -f "$D/idle_$n"; log "probe $n: busy $p"
+      fi
+      # kernel이 재시작되면 Colab 쪽 자동 반납 thread가 사라진다. 다시 건다.
+      echo "$p" | grep -q 'armed=0' && { log "re-arming $n (self-stop thread missing)"; "$0" arm "$n" >/dev/null 2>&1 </dev/null; }
+    done 3< "$REG"
     # 2) 미등록 세션: 끄지 않고 알린다 (사용자가 직접 연 세션일 수 있다)
     for s in $a; do
       grep -q "^$s " "$REG" && continue
+      echo " $STOPPED " | grep -q " $s " && continue   # 방금 이 sweep이 끈 세션은 목록에 남아 있어도 미등록으로 알리지 않는다
       f="$D/unreg_alerted_$s"
       if [ ! -f "$f" ] || [ $(( now - $(stat -c %Y "$f") )) -gt 3600 ]; then touch "$f"; alert "unregistered Colab session '$s' is running"; fi
     done
@@ -121,7 +201,7 @@ case "${1:-}" in
     new_alerts=""
     [ -s "$D/alerts" ] && new_alerts=$(cat "$D/alerts") && : > "$D/alerts"
     if [ -n "$bad" ] && [ "$hook_active" != "true" ]; then
-      jq -n --arg r "colab-guard: Colab sessions running without a valid deadline:$bad. Register with 'colab-guard reg <name> <hours>' or stop by name ('colab stop -s <name>') and confirm with 'colab sessions' before ending the turn. Sessions: $(echo $a)" '{decision:"block", reason:$r}'
+      jq -n --arg r "colab-guard: Colab sessions running without a valid deadline:$bad. Register with 'colab-guard reg <name> <hours>' or stop by name ('colab stop -s <name>') and confirm with 'colab sessions' before ending the turn. Sessions: $(echo $a)${new_alerts:+ | alerts: $new_alerts}" '{decision:"block", reason:$r}'
     elif [ -n "$bad" ] || [ -n "$new_alerts" ]; then
       jq -n --arg m "colab-guard:${bad:+ unresolved:$bad.} ${new_alerts:+alerts: $new_alerts}" '{systemMessage:$m}'
     elif [ -n "$a" ]; then
@@ -130,15 +210,24 @@ case "${1:-}" in
     exit 0;;
   bash-hook)
     in=$(cat); cmd=$(echo "$in" | jq -r '.tool_input.command // ""')
-    # Write/Edit: 파일 내용은 pkill -f만 본다(실행 스크립트에 colab new/stop이 들어가는 것은 정상).
+    # Write/Edit: 파일 내용은 패턴으로 끄는 명령과, reg 없는 세션 생성만 본다(실행 스크립트에 세션 종료가 들어가는 것은 정상).
     body=$(echo "$in" | jq -r '(.tool_input.content // "") + "\n" + (.tool_input.new_string // "")')
+    full=$(echo "$in" | jq -r '.tool_input.content // ""')
     deny(){ jq -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse", permissionDecision:"deny", permissionDecisionReason:$r}}'; exit 0; }
     # 명령 위치(줄 시작, ; & | ( $( 뒤, timeout/sudo 뒤)에 올 때만 본다. 따옴표 안 글이나 문서 속 언급은 막지 않는다.
     P='(^|[;&|(]|\$\()[[:space:]]*((sudo|timeout[[:space:]]+[0-9]+[smh]?)[[:space:]]+)?'
-    # pkill/killall -f는 위치와 상관없이 막는다: E37에서는 Colab에 보낸 Python 문자열 안에 있었다.
-    printf '%s\n%s' "$cmd" "$body" | grep -qE "(pkill|killall)[[:space:]]+(-[A-Za-z0-9]+[[:space:]]+)*-[A-Za-z]*f" && deny "colab-guard: 'pkill -f' can match the calling shell itself (E37 incident). List targets first with pgrep and kill by PID from an uploaded script."
-    echo "$cmd" | grep -qE "${P}colab[[:space:]]+stop" && ! echo "$cmd" | grep -qE 'colab[[:space:]]+stop[^|;&]*-s[[:space:]]+[A-Za-z0-9_$"{-]' && deny "colab-guard: 'colab stop' must name the session with -s <name>; never stop all sessions."
+    # 명령줄 패턴으로 프로세스를 끄는 명령(full-command 매칭 옵션)은 위치와 상관없이 막는다: E37에서는 Colab에 보낸 Python 문자열 안에 있었다.
+    printf '%s\n%s' "$cmd" "$body" | grep -qE "(pkill|killall)[[:space:]]+(-[A-Za-z0-9]+[[:space:]]+)*-[A-Za-z]*f" && deny "colab-guard: killing by command-line pattern (the full-command match flag) can match the calling shell itself (E37 incident). List targets first with pgrep and kill by PID from an uploaded script."
+    echo "$cmd" | grep -qE "${P}colab[[:space:]]+stop" && ! echo "$cmd" | grep -qE 'colab[[:space:]]+stop[^|;&]*(-s[[:space:]]+[A-Za-z0-9_$"{-]|--help)' && deny "colab-guard: 'colab stop' must name the session with -s <name>; never stop all sessions."
     echo "$cmd" | grep -qE "${P}colab[[:space:]]+new" && ! echo "$cmd" | grep -qE 'colab-guard reg|--help' && deny "colab-guard: register the session with 'colab-guard reg <name> <hours>' in the same command before 'colab new'."
+    # 새로 쓰는 script(Write)와 실행하는 script(bash x.sh)에 세션 생성이 있으면 그 파일 안에 reg도 있어야 한다.
+    NEWRE='(^|[;&|(]|\$\()[[:space:]]*(timeout[[:space:]]+[0-9]+[smh]?[[:space:]]+)?colab[[:space:]]+new'
+    if echo "$full" | grep -qE "$NEWRE" && ! echo "$full" | grep -q 'colab-guard reg'; then deny "colab-guard: this script opens a session ('colab new') without 'colab-guard reg <name> <hours>' before it."; fi
+    cwd=$(echo "$in" | jq -r '.cwd // ""')
+    for f in $(echo "$cmd" | grep -oE '[^[:space:];&|()"'"'"']+\.sh' | sort -u); do
+      [ -f "$f" ] || f="$cwd/$f"; [ -f "$f" ] || continue
+      if grep -qE "$NEWRE" "$f" && ! grep -q 'colab-guard reg' "$f"; then deny "colab-guard: $f opens a session ('colab new') without 'colab-guard reg <name> <hours>'."; fi
+    done
     exit 0;;
-  *) sed -n '2,11p' "$0"; exit 1;;
+  *) sed -n '2,16p' "$0"; exit 1;;
 esac
