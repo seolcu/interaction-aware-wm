@@ -11,6 +11,8 @@
 - `+replan=contact` (oracle) / `+replan=gate +replan_tau=τ` (gate 모델) /
   `+replan=random +replan_p=p` (대조군: block마다 확률 p로 끊는다): 충돌이 예상되는 block까지만 실행하고 다시 계획한다(E37).
 - `+contact_cost=λ`: gate 모델의 상상 α로 충돌 회피 cost를 더한다(E29). oracle_avoid에서는 정답 충돌에 같은 cost를 준다.
+- 정답 obstacle 입력 모델(predictor.int_oracle_key=obs_oracle, E39): planning 때 env에서 obstacle의 과거·현재·미래 상태를
+  계산해 h_int에 넣는다. `+plan_history`가 모델의 history 길이와 같아야 한다. 설정 없이 모델을 보고 켠다.
 
 사용 예:
     python scripts/eval.py policy=cfjepa_tworoom_n2/weights_epoch_10.pt world.num_distractors=2
@@ -53,7 +55,7 @@ def img_transform(cfg):
     return transform
 
 
-def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool):
+def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, oracle_horizon: int = 0):
     """WorldModelPolicy에 두 가지를 더한다 (E26).
 
     obs_fix: World._evaluate_from_dataset은 env를 dataset 시작 상태로 맞춘 뒤 첫 관측 pixels를 dataset
@@ -62,7 +64,11 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool):
     history > 1: 계획할 때 frame t-(history-1)·fs, ..., t-fs, t와 그 사이에 실행한 action block을 넣는다
         (학습과 같은 frameskip 간격). episode 시작 전 frame은 env.render_past로 만들고 action은 0이다
         ("시작 위치에 멈춰서 지켜보았다"). action은 process['action']으로 학습과 같이 정규화한다.
+    oracle_horizon > 0 (E39): 정답 obstacle 상태를 info의 'obs_oracle' (n, history + horizon - 1, 6K)로 넣는다.
+        history frame의 상태는 frame과 같이 기록해 둔 값이고, 미래는 env에서 obstacle만 앞으로 돌려 계산한다
+        (obstacle은 action과 무관하게 움직이므로 후보 action과 상관없이 정확하다). iawm.cfjepa_gate.CFJEPA.rollout이 읽는다.
     """
+    from iawm import obs_oracle as oo
 
     class HistoryPolicy(base_cls):
         def set_env(self, env):
@@ -70,6 +76,7 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool):
             n = getattr(env, 'num_envs', 1)
             self.frames = [[] for _ in range(n)]   # env step마다의 frame (HWC uint8), 시작 전 frame 포함
             self.raw_actions = [[] for _ in range(n)]  # env step마다 실행한 raw action, 시작 전은 0
+            self.obs_states = [[] for _ in range(n)]   # frames와 같은 index의 obstacle (pos, vel) (E39)
             self.started = np.zeros(n, dtype=bool)
 
         def _unwrapped(self, i):
@@ -88,9 +95,13 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool):
                     if pre > 0:
                         for k in range(pre, 0, -1):
                             self.frames[i].append(np.asarray(env.render_past(k)))
+                            if oracle_horizon > 0:
+                                self.obs_states[i].append(oo.past_state(env, k))
                             self.raw_actions[i].append(np.zeros(self.env.single_action_space.shape, np.float32))
                     self.started[i] = True
                 self.frames[i].append(pix[i, -1].copy())
+                if oracle_horizon > 0:
+                    self.obs_states[i].append(oo.current_state(self._unwrapped(i)))
             info_dict['pixels'] = pix
             if history > 1:
                 idx = [-1 - frameskip * j for j in range(history - 1, -1, -1)]  # t-(h-1)fs ... t
@@ -104,11 +115,17 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool):
                         a = self.process['action'].transform(a)
                     acts.append(a.reshape(history - 1, -1))  # (h-1, fs*A), 학습 data와 같은 순서
                 info_dict['hist_action'] = np.stack(acts).astype(np.float32)
+                if oracle_horizon > 0:
+                    info_dict['obs_oracle'] = np.stack([
+                        oo.plan_oracle([self.obs_states[i][j] for j in idx], self._unwrapped(i), oracle_horizon, frameskip)
+                        for i in range(n)
+                    ])
             if not getattr(self, '_logged', False):  # 첫 호출에서 입력 모양을 한 번 남긴다 (smoke test 확인용)
                 self._logged = True
                 print('[history policy] pixels', info_dict['pixels'].shape,
                       'hist_action', getattr(info_dict.get('hist_action'), 'shape', None),
-                      'frames/env', len(self.frames[0]), 'obs_fix', obs_fix, flush=True)
+                      'frames/env', len(self.frames[0]), 'obs_fix', obs_fix,
+                      'obs_oracle', getattr(info_dict.get('obs_oracle'), 'shape', None), flush=True)
             action = super().get_action(info_dict, **kwargs)
             for i in range(n):
                 a = np.asarray(action[i], dtype=np.float32)
@@ -288,9 +305,16 @@ def run(cfg: DictConfig):
         plan_history = int(cfg.get("plan_history", 1))
         obs_fix = bool(cfg.get("obs_fix", False))
         policy_cls = swm.policy.WorldModelPolicy
+        pr = model.predictor
+        plan_oracle = (getattr(pr, "int_oracle_dim", 0) > 0 and getattr(pr, "int_oracle_key", "") == "obs_oracle"
+                       and getattr(pr, "gate_mode", "off") != "off")
+        if plan_oracle:  # E39: 정답 obstacle 상태를 planning에 넣는다
+            assert plan_history == pr.num_frames, "정답 obstacle 입력 모델은 +plan_history가 모델 history 길이와 같아야 한다"
+            print(f"[plan oracle] obs_oracle dim {pr.int_oracle_dim} horizon {cfg.plan_config.horizon}", flush=True)
         if plan_history > 1 or obs_fix:  # E26: 첫 관측을 실제 env 화면으로, planning에 과거 frame 넣기
             policy_cls = make_history_policy(
-                policy_cls, plan_history, cfg.plan_config.action_block, obs_fix
+                policy_cls, plan_history, cfg.plan_config.action_block, obs_fix,
+                oracle_horizon=cfg.plan_config.horizon if plan_oracle else 0,
             )
         replan = str(cfg.get("replan", "none"))
         if replan in ("gate", "random"):  # E37: gate α가 tau를 넘는 block까지만 실행하고 다시 계획

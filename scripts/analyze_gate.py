@@ -50,6 +50,23 @@ def action_stats(f):
     return a.mean(0), a.std(0, ddof=1)
 
 
+def load_oracle(model, f, frameskip=5):
+    """oracle 입력 모델이면 row별 oracle 값을 학습 때와 같은 형식으로 만든다. 아니면 None.
+
+    - 'oracle_state' (E16): h5 column을 z-score 정규화한다(train.py의 column normalizer와 같다).
+    - 'obs_oracle' (E39): obstacle_pos, obstacle_vel에서 바로 계산한다(고정 scale, iawm.obs_oracle).
+    """
+    pr = model.predictor
+    if getattr(pr, 'int_oracle_dim', 0) <= 0:
+        return None
+    if getattr(pr, 'int_oracle_key', 'oracle_state') == 'obs_oracle':
+        from iawm import obs_oracle
+        return obs_oracle.dataset_column(f, frameskip)
+    o_all = f['oracle_state'][:].astype(np.float64)
+    ok = o_all[~np.isnan(o_all).any(axis=1)]
+    return np.nan_to_num(((o_all - ok.mean(0)) / ok.std(0, ddof=1)).astype(np.float32), nan=0.0)
+
+
 def iter_clips(f, episodes, num_steps=4, frameskip=5, clip_stride=5, act_mean=None, act_std=None, oracle=None):
     """episode마다 clip을 만든다. 반환: pixels (C, num_steps, 3, H, W) uint8, action (C, num_steps, fs*2),
     contact (C, num_steps-1) bool, episode index."""
@@ -91,11 +108,7 @@ def run(model, f, episodes, device, batch=128, distractors=0, frameskip=5, histo
     dim_c = getattr(model, 'dim_c', None)
     has_gate = hasattr(model.predictor, 'last_alpha')
     # E16: oracle h_int 모델이면 정답 state column을 학습 때처럼 z-score 정규화해 넘긴다
-    oracle = None
-    if getattr(model.predictor, 'int_oracle_dim', 0) > 0:
-        o_all = f['oracle_state'][:].astype(np.float64)
-        ok = o_all[~np.isnan(o_all).any(axis=1)]
-        oracle = np.nan_to_num(((o_all - ok.mean(0)) / ok.std(0, ddof=1)).astype(np.float32), nan=0.0)
+    oracle = load_oracle(model, f, frameskip)
     buf_orc = []
     rows = {'ep': [], 'pos': [], 'contact': [], 'err_c': [], 'err_all': [], 'alpha': [],
             'err_c_off': [], 'err_c_on': []}

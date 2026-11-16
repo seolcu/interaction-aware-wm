@@ -204,6 +204,41 @@ class CFJEPA(LeWM):
         d0 = (emb[..., -1, : self.dim_c] - goal_emb[..., -1, : self.dim_c]).norm(dim=-1).float()  # (B, S)
         return cost + (lam * d0 * a_sum).to(cost.dtype)
 
+    def rollout(self, info, action_sequence, history_size: int = None):
+        """LeWM.rollout + 정답 obstacle 상태 (E39).
+
+        info에 'obs_oracle' (B, S, F, D)가 있고 predictor가 oracle 입력을 받으면(int_oracle_dim > 0),
+        예측할 때마다 그 window의 frame에 해당하는 값을 predictor.oracle에 넣는다. LeWM.rollout의 t번째
+        예측은 frame lo..lo+HS-1 (lo = max(0, H + t - HS))을 입력으로 쓴다. 없으면 LeWM.rollout과 같다.
+        """
+        pred = self.predictor
+        orc = info.get('obs_oracle') if getattr(pred, 'int_oracle_dim', 0) > 0 else None
+        if orc is None or getattr(pred, 'gate_mode', 'off') == 'off':
+            return super().rollout(info, action_sequence, history_size)
+        HS = history_size if history_size is not None else getattr(pred, 'num_frames', 3)
+        H = info['pixels'].size(2)
+        orc = orc.to(device=action_sequence.device, dtype=action_sequence.dtype).flatten(0, 1)  # (BS, F, D)
+        assert orc.size(-1) == pred.int_oracle_dim, (orc.shape, pred.int_oracle_dim)
+        had = 'forward' in pred.__dict__  # 다른 wrapper(E29 contact cost, E37 α 기록)가 이미 감싸고 있을 수 있다
+        orig, calls = pred.forward, [0]
+
+        def forward_orc(emb, act_emb):
+            lo = max(0, H + calls[0] - HS)
+            calls[0] += 1
+            pred.oracle = orc[:, lo:lo + emb.size(1)]
+            assert pred.oracle.size(1) == emb.size(1), (orc.shape, lo, emb.shape)
+            return orig(emb, act_emb)
+
+        pred.forward = forward_orc
+        try:
+            return super().rollout(info, action_sequence, history_size)
+        finally:
+            if had:
+                pred.forward = orig
+            else:
+                del pred.forward
+            pred.oracle = None
+
     def criterion(self, info_dict: dict) -> torch.Tensor:
         """z^c만으로 cost를 계산한다. 반환: (B, S)."""
         pred_c = info_dict['predicted_emb'][..., : self.dim_c]  # (B, S, T, d_c)
@@ -278,6 +313,7 @@ class InteractionGatedPredictor(FactorizedPredictor):
         gate_init_bias: float = 0.0,
         gate_objective: str = 'sparsity',
         int_oracle_dim: int = 0,
+        int_oracle_key: str = 'oracle_state',
         int_arch: str = 'transformer',
         int_input: str = 'state',
         **kwargs,
@@ -299,7 +335,11 @@ class InteractionGatedPredictor(FactorizedPredictor):
         # int_oracle_dim > 0 (E16 진단): h_int 입력에 정답 state(agent·obstacle 위치·속도)를 덧붙인다.
         # 학습 전에 train.py가 `self.oracle` (B, T, int_oracle_dim)을 채운다. planning 때는 미래 state를
         # 알 수 없으므로 이 설정은 예측 오차 진단 전용이다(oracle이 없으면 0으로 채운다).
+        # int_oracle_key (E39): oracle 값의 종류. 'oracle_state'는 E16의 agent·obstacle state(학습 data column,
+        # 예측 진단 전용)이고, 'obs_oracle'은 obstacle만의 상태(iawm.obs_oracle)라서 planning 중에도 env에서
+        # 정확히 계산해 넣을 수 있다(CFJEPA.rollout 참고).
         self.int_oracle_dim = int_oracle_dim
+        self.int_oracle_key = int_oracle_key
         self.oracle: torch.Tensor | None = None
         # int_input='resolve' (E30): h_int와 gate 입력에 g의 예측(push 전 다음 z^c)과 h의 예측(다음 z^u)을
         # 더한다(detach). env가 "각자 움직인 뒤 겹치면 밀어낸다"로 동작하므로, 충돌 해소를 두 factor의

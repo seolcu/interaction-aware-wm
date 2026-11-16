@@ -114,6 +114,7 @@ def probe(Z, targets, con, ep, dim_c, device):
     inputs = {'z_c': Z[:, :dim_c], 'z_u': Z[:, dim_c:], 'z (both)': Z}
     names = list(targets) + ['contact (AUROC)']
     results = {}
+    preds = {}  # (입력, probe 종류) -> test 예측 (원래 단위, px)
     for in_name, X in inputs.items():
         mu, sd = X[tr].mean(0), X[tr].std(0) + 1e-6
         X = ((X - mu) / sd).astype(np.float32)
@@ -124,6 +125,7 @@ def probe(Z, targets, con, ep, dim_c, device):
         mlp = mlp_fit_predict(X[tr], Yn[tr], X[te], device)
         for j, k in enumerate(targets):
             results[(in_name, k)] = (r2(Yn[te, j], lin[:, j]), r2(Yn[te, j], mlp[:, j]))
+        preds[(in_name, 'linear')], preds[(in_name, 'MLP')] = lin * ys + ym, mlp * ys + ym
         if con[tr].any() and con[te].any():
             lr = LogisticRegression(max_iter=2000, class_weight='balanced').fit(X[tr], con[tr])
             p_lin = lr.decision_function(X[te])
@@ -139,6 +141,28 @@ def probe(Z, targets, con, ep, dim_c, device):
             v = results.get((in_name, k))
             cells += f'{"-":>20s}' if v is None else f'{v[0]:>9.3f} | {v[1]:<8.3f}'.rjust(20)
         print(f'{k:22s}{cells}')
+    # E38: 같은 probe의 오차를 px로 본다. R²만으로는 "충돌 계산에 쓸 만큼 정밀한가"를 알 수 없다
+    # (agent 반지름 + obstacle 반지름이 접촉 거리다). 2D 거리 오차의 평균이고, contact는 그 frame을 만든 step의 contact다.
+    keys = list(targets)
+    Yte, c = Y[te], con[te]
+
+    def dist(P, a, b):
+        ia, ib = keys.index(a), keys.index(b)
+        return np.sqrt((P[:, ia] - Yte[:, ia]) ** 2 + (P[:, ib] - Yte[:, ib]) ** 2)
+
+    print('위치 오차 (px, 2D 거리의 평균). 각 칸은 linear | MLP')
+    print(f'{"":34s}' + ''.join(f'{n:>20s}' for n in inputs))
+    rows = [('obstacle 위치: 전체', 'obstacle_x', 'obstacle_y', np.ones_like(c)),
+            ('obstacle 위치: contact frame', 'obstacle_x', 'obstacle_y', c),
+            ('agent 위치: non-contact frame', 'agent_x', 'agent_y', ~c),
+            ('agent 위치: contact frame', 'agent_x', 'agent_y', c)]
+    for label, a, b, m in rows:
+        cells = ''
+        for in_name in inputs:
+            dl, dm = dist(preds[(in_name, 'linear')], a, b)[m].mean(), dist(preds[(in_name, 'MLP')], a, b)[m].mean()
+            cells += f'{dl:>9.2f} | {dm:<8.2f}'.rjust(20)
+            results[(in_name, label)] = (dl, dm)
+        print(f'{label:34s}{cells}')
     return results
 
 

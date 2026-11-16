@@ -22,7 +22,7 @@ sys.path[:0] = [str(ROOT / 'src'), str(ROOT), str(ROOT / 'scripts')]
 import numpy as np
 import torch
 
-from analyze_gate import action_stats, iter_clips, to_model_pixels, IMAGENET_MEAN, IMAGENET_STD
+from analyze_gate import action_stats, iter_clips, load_oracle, to_model_pixels, IMAGENET_MEAN, IMAGENET_STD
 
 
 @torch.no_grad()
@@ -33,8 +33,12 @@ def errors(model, f, episodes, device, steps, history=3, frameskip=5, distractor
     d_c = model.dim_c
     pred, pers, labs, alphas = [], [], [], []
     gated = hasattr(model.predictor, 'last_alpha')
-    for px, act, lab, _, _ in iter_clips(f, episodes, history + steps, frameskip, frameskip, act_mean, act_std):
+    # E39: oracle 입력 모델이면 clip의 각 frame에 해당하는 정답 값을 넣는다. obs_oracle은 obstacle만의 상태라
+    # 미래 frame의 값도 planning에서 그대로 쓸 수 있다(obstacle은 agent와 무관하게 움직인다).
+    oracle = load_oracle(model, f, frameskip)
+    for px, act, lab, _, orc in iter_clips(f, episodes, history + steps, frameskip, frameskip, act_mean, act_std, oracle):
         act = torch.from_numpy(act).to(device)
+        orc = torch.from_numpy(orc).to(device) if orc is not None else None
         for i in range(0, len(px), batch):
             pixels = to_model_pixels(px[i:i + batch], device)
             if distractors > 0:
@@ -47,6 +51,8 @@ def errors(model, f, episodes, device, steps, history=3, frameskip=5, distractor
             window = emb[:, :history]
             e_pred, e_pers, e_alpha = [], [], []
             for k in range(steps):
+                if orc is not None:
+                    model.predictor.oracle = orc[i:i + batch, k:k + history]
                 nxt = model.predict(window, act_emb[:, k:k + history])[:, -1:]
                 if gated:
                     e_alpha.append(model.predictor.last_alpha[:, -1, 0].float().cpu())
