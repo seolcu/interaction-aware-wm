@@ -1372,3 +1372,149 @@ epoch 4 (seed 42~45): `e32_cf` 51.0, `e33_res` learned 54.0 / off 49.5, `e33_res
 **사고:** 수동 중단에 쓴 `pkill -f`가 `colab exec` 자신의 shell까지 죽여 이후 exec가 멈췄다. watcher가 완료를 보지 못해 세션이 약 3.5시간 빈 채로 돌았고(약 7 CU) log 다운로드도 실패했다. 위 표는 `outputs/e37/res/status_live.txt`와 직접 확인한 status 값이다. E37 전체 약 12 CU.
 
 **결과물:** `outputs/e37/res/status_live.txt`(git 제외).
+
+## 2026-11-16 · E38. 진단: CF-JEPA latent의 obstacle 정보와 contact 잔차 (학습 없음)
+
+**목적:** E25~E37에서 gate는 contact를 잘 찾지만(AUROC 0.98) CF-JEPA 대비 contact z^c 오차를 최대 6.5%만 줄였다. 원인 가설은 두 가지다.
+1. CF-JEPA는 g가 z^u를 보지 못할 뿐, encoder가 obstacle 정보를 z^c에 넣는 것은 막지 않는다. 그래서 Collision data로 학습한 CF-JEPA는 이미 obstacle을 (흐릿하게) 쓰고 있고, gate가 더하는 정보가 적다. 근거는 간접적이다(E8 probe의 z^c → obstacle x R² 0.85, E10 `n0`의 zc 0.410 대 zc+zu 0.445, E33에서 h_int가 contact를 맡았을 때 g의 contact 오차 0.200 대 CF-JEPA 0.107). r1x 모델(`e32_cf`)에서 직접 잰 적은 없다.
+2. 모든 모델의 contact 오차가 0.10 근처에서 멈춘 것은 latent의 obstacle 상태가 정밀하지 않기 때문이다. 예전 모델에서는 정답 state를 주면 h_int가 contact 오차를 26~44% 줄였다(E19, E20). 반대로 distractor 없는 모델에서는 정답 state도 latent보다 더 설명하지 못한 적이 있다(E10 `n0`, E15).
+
+**설정**
+- 대상: `e32_cf`(epoch 10, r1x로 학습한 CF-JEPA). 고정한다.
+- data: `r1y`. r1x와 같은 조건(obstacle 1개, 반지름 30)이고 수집 seed만 다르다(4242, 1만 episode). `e32_cf`가 학습에 쓰지 않은 data에서 잰다. E9~E35의 분석은 학습에 쓴 data(같은 seed로 다시 수집)에서 쟀다.
+- `probe_latent.py --ckpt e32_cf/weights_epoch_10.pt --data r1y.h5 --episodes 2000 --distractors 0`: frame 한 장의 z^c, z^u에서 obstacle과 agent 위치를 읽는다. 이번에 px 단위 오차와 contact frame별 값을 더했다. obstacle은 agent 위에 그려지므로(`envs/collision_tworoom.py`의 `_render_frame`), contact frame에서 agent 위치가 흐려지는지도 본다.
+- `probe_residual.py --ckpt e32_cf/weights_epoch_10.pt --data r1y.h5 --episodes 10000`: contact 잔차를 입력별로 얼마나 설명하는지(B) 잰다. 입력은 `zc`, `zc+zu`, `zc+zu+obs`(latent + 정답 obstacle 위치·속도·5 step 뒤 위치, E39의 h_int가 보는 정보), `oracle`(정답 state만)이다. 이번에 history 3 frame의 latent에서 obstacle 위치와 속도를 읽는 state probe도 더했다.
+
+**읽는 법 (실행 전에 정함)**
+- 가설 1: z^c만으로 obstacle 위치가 z^u와 비슷한 정밀도로 읽히면 맞다. z^c에서 거의 읽히지 않으면(MLP 오차가 obstacle 위치의 표준편차에 가까우면) 틀렸고, 진단을 다시 세운다.
+- 가설 2: contact B가 `zc+zu+obs` ≥ 0.30이고 `zc+zu`보다 0.15 이상 높으면 맞다(정밀한 obstacle 상태가 병목). `oracle`과 `zc+zu+obs`가 모두 낮으면(0.15 미만) 정답 state로도 못 맞히는 것이므로, 예측 개선 방향을 접는 근거가 된다.
+- E38은 E39와 같은 세션에서 돌린다. E39의 학습이 싸져서(아래) E38 결과로 E39 학습을 막지 않는다. 비용이 큰 planning 평가만 E39의 held-out 수치로 판정한다.
+
+**결과: frame 한 장의 latent에서 읽은 위치** (`probe_latent.py`, r1y 2,000 episode, test 28,657 frame. 각 칸은 linear | MLP)
+
+| | z^c | z^u | z 전체 |
+|---|---|---|---|
+| obstacle x, y (R²) | 0.989, 0.996 \| 0.997, 0.999 | 0.376, 0.466 \| 0.948, 0.957 | 0.990, 0.997 \| 0.998, 0.999 |
+| agent x, y (R²) | 0.989, 0.999 \| 0.998, 0.999 | 0.501, 0.600 \| 0.955, 0.958 | 0.991, 0.999 \| 0.999, 0.999 |
+| obstacle 위치 오차, contact frame (px) | 4.50 \| 1.79 | 46.09 \| 11.52 | 4.49 \| 1.82 |
+| agent 위치 오차, non-contact frame (px) | 3.72 \| 1.56 | 38.65 \| 11.24 | 3.34 \| 1.66 |
+| agent 위치 오차, contact frame (px) | 3.90 \| 1.74 | 49.50 \| 12.78 | 3.67 \| 1.66 |
+
+**결과: contact 잔차 설명력과 state probe** (`probe_residual.py`, r1y 1만 episode, test transition 22,999개, contact 31.9%)
+
+| 입력 | non-contact B | contact B |
+|---|---|---|
+| `zc` | 0.105 | 0.029 |
+| `zc+zu` | 0.110 | 0.031 |
+| `zc+zu+obs` | 0.156 | 0.141 |
+| `oracle` | 0.156 | 0.115 |
+
+| history 3 frame의 latent → 마지막 frame의 state (non-contact / contact, 2D 오차 평균) | z^c | z^u | z^c + z^u | 값의 표준편차 |
+|---|---|---|---|---|
+| agent 위치 (px) | 0.87 / 1.15 | 7.11 / 7.70 | 0.97 / 1.15 | 68.35 |
+| obstacle 위치 (px) | 2.32 / 1.69 | 7.47 / 7.40 | 2.05 / 1.68 | 65.30 |
+| obstacle 속도 (px/step) | 1.83 / 1.66 | 2.15 / 2.12 | 1.78 / 1.63 | 4.53 |
+
+**해석**
+- **가설 1은 맞다. z^c와 z^u의 분리가 무너져 있다.** `e32_cf`의 z^c에서 obstacle 위치가 1.8px(MLP)로 읽힌다. z^u(11.5px)보다 훨씬 정밀하다. agent 위치도 z^c에 있고 z^u에는 흐릿하게만 있다. Collision data로 학습한 CF-JEPA는 obstacle을 z^c에 넣어 g가 직접 쓰고, z^u는 거의 쓰이지 않는 사본이다. gate가 z^u에서 가져올 새 정보가 없었던 이유다.
+- **가설 2는 미리 정한 기준으로는 확인되지 않았다.** contact B는 `zc+zu+obs` 0.141, `oracle` 0.115로 둘 다 0.15 미만이다. 미리 정한 읽는 법대로면 "정답 state로도 못 맞힌다"에 해당한다.
+- **그러나 이 probe가 약한 도구였다.** 같은 정보(latent + 정답 obstacle)로 실제 h_int를 학습한 E39에서는 contact 오차가 test data에서 67~74% 줄었다. MLP probe(4,000 step, 마지막 position만)는 그 일부만 잡는다. E9, E10, E15에서 이 probe의 B로 내린 "정답 state로도 못 맞힌다"류의 판단은 같은 이유로 과소평가였을 수 있다. 앞으로 이 질문은 probe가 아니라 `train_int_frozen.py`의 held-out 수치로 잰다.
+- **부족한 것은 obstacle의 속도다.** 위치는 3 frame에서 1.7~2.3px로 읽히지만 속도 오차는 1.6~1.8px/step이다(속도의 표준편차 4.5). 모델의 한 step은 env 5 step이므로, 한 step 뒤 obstacle 위치가 8~9px 어긋난다. E39의 px 진단에서 CF-JEPA가 예측한 z^c의 obstacle 위치는 1 step 앞에서 이미 6.7~9.1px 틀렸다. 속도만 따로 넣어 확인한 것은 아니다.
+- obstacle이 agent를 가려 위치가 흐려지는 문제는 없다(contact frame의 agent 위치 1.7px).
+
+**결과물:** `outputs/e38/res/e38/`(git 제외)의 `e38_plat.log`, `e38_pres.log`.
+
+## 2026-11-16 · E39. 상한: 정답 obstacle 궤적을 h_int에 넣은 gate (base 고정)
+
+**목적:** "z^u가 obstacle을 완벽하게 담고 완벽하게 예측한다면, 지금의 gate 구조(z^c 예측에 α·h_int를 더한다)가 planning 성공률을 얼마나 올리는가"를 잰다. obstacle은 action과 agent의 영향을 받지 않고 움직이므로, planning 중에도 env 상태에서 미래 obstacle 궤적을 정확히 계산해 넣을 수 있다. 실제로 쓸 모델이 아니라 상한이다. 이득이 크면 obstacle 상태를 화면에서 읽고 예측하는 module(E40)을 만들 근거가 되고, 이득이 없으면 이 구조로는 정보가 완벽해도 이길 수 없다는 뜻이다.
+
+**구현**
+- `src/iawm/obs_oracle.py`: frame마다 [obstacle 위치, 속도, 5 step 뒤 위치](obstacle당 6차원, 고정 scale). 학습 data에서는 `obstacle_pos`, `obstacle_vel` column에서, planning에서는 env에서 계산한다(시작 전 frame은 `render_past`와 같은 역방향 계산).
+- `InteractionGatedPredictor`의 `int_oracle_key='obs_oracle'`, `iawm.cfjepa_gate.CFJEPA.rollout`: rollout의 예측마다 그 window의 frame에 해당하는 값을 h_int에 넣는다. gate 입력에는 넣지 않는다.
+- `scripts/eval.py`: 모델이 `obs_oracle` 입력이면 `HistoryPolicy`가 history frame의 obstacle 상태를 기록하고 미래 상태를 계산해 info의 `obs_oracle`로 넘긴다.
+- `scripts/train_int_frozen.py`: base를 고정하고 interaction module만 학습한다. loss는 E35(`train.py +freeze_base=true`)와 같은 식이다. encoder가 고정이므로 frame latent를 한 번만 계산해 두고 그 위에서 학습한다(E35는 epoch당 약 55분).
+- `scripts/colab/check_obs_oracle.py`: env를 돌리며 과거·미래 obstacle 상태 계산이 실제 궤적과 맞는지 확인한다(smoke test에서 실행).
+
+**E35와 달라진 점:** E35는 `e32_cf`의 학습 data(r1x, 같은 seed)로 h_int를 학습했다. 그러면 h_int가 배우는 잔차는 base가 이미 본 data에서의 잔차다. 이번에는 seed가 다른 `r1y`로 학습한다.
+
+**설정**
+- base: `e32_cf/weights_epoch_10.pt`(고정). 학습 data `r1y`(마지막 500 episode는 검증용), test data `r1yt`(seed 777, 1,500 episode, base와 h_int 모두 보지 않은 data).
+- 모델 (모두 resolve 입력, supervised gate, lr 1e-3, 30 epoch, 검증 오차가 가장 낮은 epoch를 쓴다)
+  - `e39_obs`: 정답 obstacle 입력, h_int 크기는 E35와 같다(depth 2, hidden 128).
+  - `e39_obsbig`: 정답 obstacle 입력, 큰 h_int(depth 4, hidden 256, mlp 1024).
+  - `e39_lat`: 정답 없음(대조군). E35 `e35_fres`와 같은 구조를 새 data로 학습한 것이다. 정답 obstacle의 효과와 "새 data로 다시 학습한 효과"를 가른다.
+- 예측 판정 (test data, contact transition의 z^c 오차, 학습된 α로 더한 예측): CF-JEPA 대비 감소율이 `e39_obs`, `e39_obsbig` 중 높은 쪽과 `e39_lat` 모두 15% 미만이면 planning 평가를 하지 않고 끝낸다. `analyze_gate.py`, `multistep_error.py`로 같은 수치를 따로 확인한다.
+- planning 평가: P2, r1x(`world.num_obstacles=1 eval.eval_budget=30 +world.obstacle_radius=30.0 +obs_fix=true +plan_history=3`), L4 한 세션에서 seed를 짝지어 잰다. 대상은 `e32_cf`(CF-JEPA), 정답 obstacle 모델 중 test 수치가 높은 것, `e39_lat`이다.
+  - 1단계: seed 42~49. 정답 obstacle 모델 − CF-JEPA의 paired 평균이 +2%p 미만이면 여기서 끝낸다.
+  - 2단계: seed 50~57을 더해 16개로 판정한다.
+- 성공 기준: 정답 obstacle 모델 − CF-JEPA (paired, seed 16개)가 +5%p 이상이고 표준오차의 3배 이상. `e39_lat` − CF-JEPA도 함께 보고한다.
+- 비용 상한: 세션 1개(L4), 20 CU. 기한은 예상 시간 + 1시간으로 `colab-guard`에 등록한다.
+
+**추가 진단 (11/16 23:37, 1단계 결과를 본 뒤 같은 세션에 더했다. 미리 정한 판정 대상이 아니라 탐색용이다)**
+- 배경: test data에서 `e39_obsbig`의 contact z^c 오차는 73.7% 줄었고 5 block 상상 rollout에서도 contact 오차가 0.274에서 0.086으로 줄었다. 그런데 planning 1단계(seed 42~49)는 CF-JEPA 대비 +2.5 ± 2.1%p였다. 또 h_int를 항상 켜면(α = 1) non-contact 오차도 75% 줄었다. z^c에 obstacle 위치가 들어 있어서(E38), z^c 오차의 큰 부분이 agent가 아니라 obstacle의 다음 위치를 맞히는 오차일 수 있다.
+- `scripts/multistep_px.py`: 실제 frame의 z^c에서 agent와 obstacle 위치(px)를 읽는 probe를 학습해 상상 rollout의 z^c에 적용한다. k block 앞 agent 위치 오차(px)를 CF-JEPA, `e39_obsbig`(learned, always), `e39_lat`에서 잰다. agent 위치 오차가 크게 줄었는데도 planning이 그대로면 병목은 planning 쪽(cost, CEM)이고, 거의 줄지 않았으면 z^c 오차 감소가 주로 obstacle 성분이었다는 뜻이다.
+- `+gate_mode=always`로 `e39_obsbig`를 seed 42~49에서 평가한다(`r1x_obsalways`). gate가 닫혀 쓰이지 않던 non-contact 구간의 개선이 planning에 영향을 주는지 본다. 같은 세션의 CF-JEPA와 seed를 짝지어 비교한다.
+
+**결과: 예측** (test data `r1yt`, 16,865 clip. z^c 오차, off는 CF-JEPA와 같다)
+
+| 모델 (가장 좋은 epoch) | contact off → learned (감소율) | contact α = 1 감소율 | non-contact learned 감소율 | α AUROC |
+|---|---|---|---|---|
+| `e39_obsbig` (25) | 0.1129 → 0.0297 (**73.7%**) | 82.0% | 24.9% | 0.975 |
+| `e39_obs` (28) | 0.1129 → 0.0376 (66.7%) | 74.9% | 22.3% | 0.975 |
+| `e39_lat` (5) | 0.1129 → 0.1067 (5.5%) | 5.2% | 2.5% | 0.974 |
+
+- 예측 판정(15%)은 정답 obstacle 모델이 통과했다. planning에는 `e39_obsbig`를 썼다.
+- `analyze_gate.py`로 따로 잰 `e39_obsbig`의 값도 같다(contact err_off 0.1129, α = 1에서 0.0203). 새 학습 script의 수치가 기존 분석 script와 맞는다.
+- 학습은 frame latent 계산 20분(73만 frame) 뒤 epoch당 약 80초(세 모델 동시)였다. E35는 epoch당 약 55분이었다.
+
+**결과: 상상 rollout** (`multistep_error.py`, r1yt 11,601 clip. persistence 대비 z^c 오차. k = 1 / 3 / 5 block)
+
+| 모델 | non-contact | contact | 상상 α AUROC |
+|---|---|---|---|
+| `e32_cf` | 0.031 / 0.031 / 0.048 | 0.123 / 0.212 / 0.274 | |
+| `e39_obsbig` learned | 0.026 / 0.027 / 0.043 | 0.038 / 0.056 / **0.086** | 0.987 / 0.975 / 0.962 |
+| `e39_lat` learned | 0.030 / 0.031 / 0.048 | 0.110 / 0.203 / 0.268 | 0.987 / 0.952 / 0.918 |
+
+**결과: 상상 rollout을 px로 읽은 것** (`multistep_px.py`, 추가 진단. 실제 frame의 z^c에서 위치를 읽는 probe의 오차는 agent 0.70px, obstacle 1.29px. k = 1 / 3 / 5 block)
+
+| 모델 | agent 위치 오차 non-contact (px) | agent 위치 오차 contact (px) | 예측한 z^c의 obstacle 위치 오차 contact (px) |
+|---|---|---|---|
+| `e32_cf` | 2.1 / 3.5 / 4.8 | 4.9 / 11.1 / **15.9** | 6.7 / 11.0 / 14.8 |
+| `e39_lat` learned | 2.1 / 3.5 / 4.7 | 4.5 / 10.6 / 15.6 | 6.5 / 10.8 / 14.2 |
+| `e39_obsbig` learned | 1.9 / 3.3 / 4.5 | 2.0 / 4.2 / **6.5** | 2.1 / 5.2 / 7.4 |
+| `e39_obsbig` always (α = 1) | 1.2 / 1.7 / 2.4 | 1.9 / 3.0 / 4.2 | 1.7 / 2.1 / 2.5 |
+
+**결과: planning** (r1x, P2, L4 한 세션, seed를 짝지음. success rate %, 평균 ± 표준오차)
+
+| 모델 | seed 42~49 | seed 50~57 | 16개 |
+|---|---|---|---|
+| `e32_cf` CF-JEPA | 64.2 | 58.8 | 61.5 ± 1.6 |
+| `e39_obsbig` (정답 obstacle) | 66.8 | 63.0 | 64.9 ± 2.1 |
+| `e39_lat` (대조군) | 61.8 | 58.5 | 60.1 ± 1.9 |
+| `e39_obsbig` `+gate_mode=always` (추가) | 66.8 ± 2.6 | | |
+
+| paired 차이 (seed 16개) | 평균 ± 표준오차 | 높음 / 낮음 |
+|---|---|---|
+| 정답 obstacle − CF-JEPA | **+3.4 ± 1.7** | 11 / 4 |
+| 대조군 − CF-JEPA | −1.4 ± 1.8 | 5 / 10 |
+| 정답 obstacle − 대조군 | +4.8 ± 1.5 | 12 / 2 |
+| always − CF-JEPA (seed 42~49) | +2.5 ± 2.0 | 5 / 2 |
+
+- seed별 값: CF-JEPA 66 64 64 58 68 58 66 70 64 66 52 68 62 56 48 54 / 정답 obstacle 76 64 70 62 60 66 64 72 76 74 44 70 64 60 64 52 / 대조군 60 68 60 56 58 66 60 66 64 62 40 64 64 68 60 46 / always 64 68 74 62 76 58 58 74.
+- 1단계의 정답 obstacle − CF-JEPA가 +2.5로 +2 기준을 넘어 2단계를 진행했다.
+
+**해석**
+- **미리 정한 성공 기준(+5%p 이상, 표준오차 3배 이상)에 미치지 못했다.** 정답 obstacle − CF-JEPA는 +3.4 ± 1.7%p(표준오차의 2.0배)다. 방향은 일관되지만(16개 중 11개 높음) 상한 실험으로서는 작다. 정답 simulator에서 interaction을 아는 것의 이득은 +20%p였다(E33).
+- **정답 obstacle 상태를 주면 충돌 결과 예측은 크게 좋아진다.** contact z^c 오차가 74% 줄고, 5 block 앞 agent 위치 오차가 contact clip에서 15.9px에서 6.5px로 준다(성공 기준은 목표 16px 이내). E8~E36에서 "h_int가 push를 6~19%만 고친다"던 병목은 구조나 학습 방식이 아니라 obstacle 정보의 정밀도였다.
+- **대조군은 달라지지 않았다.** base가 보지 않은 data로 학습해도 latent만 받은 h_int는 5.5%다(E35는 6.5%). E35의 약한 이득은 학습 data가 in-sample이어서가 아니었다. planning에서도 대조군은 CF-JEPA와 같거나 낮다(−1.4 ± 1.8).
+- **예측 개선이 planning 성공으로 이어지지 않는다.** agent 위치 예측이 2.4배 정확해졌는데 성공률은 +3.4%p다. α = 1로 non-contact 예측까지 고쳐도(agent 위치 오차 2.4px / 4.2px) 성공률은 learned와 같다(66.8). 병목이 push 예측에서 planning 쪽으로 옮겨 갔다. 다만 예측 오차는 수집 data의 action(scripted policy)에서 잰 것이다. CEM이 고르는 계획에서의 예측 오차는 재지 않았다(2607.10362가 지적한 차이). 후보 원인은 다음과 같고, 이번 실험으로는 가르지 못한다.
+  1. planning cost가 z^c 거리인데 z^c에 obstacle 위치가 들어 있다(E38). goal image에는 obstacle이 없으므로, cost에 agent와 무관한 항이 섞인다.
+  2. CEM이 data에 없는 action 열에서 모델이 틀리는 계획을 고른다.
+  3. 정답 blind simulator(77)와 CF-JEPA(60 안팎)의 차이처럼, interaction과 무관한 일반 오차가 여전히 성공률을 누른다.
+- 한계: 이 모델은 정답 obstacle 궤적을 받으므로 실제로 쓸 수 있는 모델이 아니다. 상한으로만 읽는다. `e39_obsbig`는 `e39_obs`와의 비교(test 수치)로 골랐고 planning은 한 모델만 쟀다.
+
+**다음:** E40(obstacle 상태를 화면에서 읽는 module)은 이 상한이 +3.4%p이므로 그대로 진행할 근거가 약하다. 먼저 "예측이 정확해져도 planning이 따라오지 않는 이유"를 가른다. 후보는 CEM이 고른 계획에서의 px 예측 오차 측정, agent 위치만 남긴 planning cost다. 팀과 정한 뒤 번호를 붙인다.
+
+**비용과 운영:** 세션 `e38` 4시간 34분(20:13~00:47), 8.85 CU(285.67 → 276.82). smoke test가 첫 실행에서 검사 script의 예외 상황(episode 첫 frame에서 obstacle이 방 경계에 붙어 시작)을 잡았고, 수집을 멈추지 않고 고쳐 다시 올렸다. 중간에 로컬 PC를 재부팅했고 감시 서비스가 다시 떠서 결과 저장과 세션 종료까지 마쳤다.
+
+**결과물:** `outputs/e38/res/`(git 제외)에 log 묶음 `e38_logs.tgz`, `status_live.txt`, `stable-wm/checkpoints/e39_*/`의 `config.json`, `metrics.json`, `int_only_best.pt`(학습한 interaction module만. `e32_cf`와 합치면 복원된다).
