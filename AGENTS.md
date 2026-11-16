@@ -35,8 +35,7 @@ This file provides guidance to AI agents when working with code in this reposito
   - 2D라 collision obstacle을 추가하기 쉽다.
   - CF-JEPA 성능이 높아서(0.95) 차이가 깨끗하게 보인다.
   - PushT는 Distractor env(robustness 유지 확인)에만 쓴다.
-- **중간 발표(11/5) 우선순위 (11/1):** 1) CF-JEPA 재구현과 TwoRoom N=2 재현, 2) Collision env 완성, 3) gate 초기 결과, 4) obstacle 개수 늘리기.
-  - 4)는 중간 발표 범위에서 빼지 않는다. 시간이 남으면 시도하되 1순위는 아니다.
+- **중간 발표(11/5) 우선순위 (11/1, 지난 내용):** CF-JEPA 재구현과 재현, Collision env, gate 초기 결과, obstacle 개수 늘리기 순이었다. 최종 발표(11/26) 우선순위는 팀이 정하면 여기에 적는다.
 - **실행 위치:** 코드는 로컬에서 쓰고, 실행(smoke test 포함)은 Colab에서 한다. 로컬에는 Python 3.10이 없다.
 
 ## 원문에서 확인한 사실
@@ -126,6 +125,15 @@ This file provides guidance to AI agents when working with code in this reposito
 - CF-JEPA가 distractor를 stable-worldmodel에 어떻게 넣었는지(코드 미공개)
 - Iso-Dream++의 학술지 게재본(TPAMI 등) 여부
 
+## 지금까지의 핵심 결과 (11/16, E37까지)
+
+자세한 수치와 설정은 `docs/experiments.md`에 있다. 같은 실험을 반복하기 전에 해당 E 번호를 먼저 읽는다.
+
+- **평가 버그 (E26):** stable-worldmodel은 Collision env의 첫 관측을 dataset frame으로 덮어써서, 첫 계획이 실제와 다른 obstacle 배치를 본다. 고치면 CF-JEPA 성공률이 11%p 오른다. E25 이전의 Collision env 평가 수치는 이 버그가 있는 값이다.
+- **상한 (E28, E31):** 정답 simulator로 계획하면, interaction을 아는지 여부로 성공률이 r3b에서 35%p, r1x에서 28%p 차이 난다. 연구 질문 자체는 성립한다.
+- **gate의 강점과 한계 (E27~E36):** gate α는 contact를 잘 찾는다(AUROC 0.96~0.98, 상상 rollout에서도 0.94 이상). 하지만 h_int는 push 결과를 contact z^c 오차 기준으로 6~19%만 고친다. 그래서 planning 성공률에서 CF-JEPA를 공정 비교로 이긴 설정은 없다. 같이 학습하면 base가 나빠지고(E33), base를 고정하면 이득이 noise 수준이며(E35, +2.4%p), 낮은 lr로 fine-tune하면 h_int가 쓰이지 않는다(E36).
+- **다시 계획하기 (E37):** 25 step을 한 번에 실행하지 않고 더 자주 다시 계획하면, 어떤 모델이든 r1x 성공률이 약 60에서 75~79로 오른다. gate α로 다시 계획할 시점을 고르는 것은 무작위 시점보다 낫지 않았다.
+
 ## 작업 규칙
 
 - **문체:**
@@ -139,13 +147,43 @@ This file provides guidance to AI agents when working with code in this reposito
 - **커밋 메시지:** 영어로 쓴다.
 - **환경 이름 (11/1 정함):** 실험 환경은 영어 이름으로만 부른다. 충돌하지 않는 사각형이 있는 환경은 **Distractor env**(TwoRoom이면 Distractor TwoRoom), 움직이는 obstacle이 agent를 미는 환경은 **Collision env**(Collision TwoRoom)다. 예전 표기(Env 뒤에 동그라미 숫자)와 한국어 이름(사각형 환경, 충돌 환경)은 쓰지 않는다.
 
+## 실험 운영 규칙 (11/16 정함)
+
+E25~E37에서 CU를 낭비하거나 결론을 잘못 낼 뻔한 경험에서 나온 규칙이다. 사람과 agent 모두 따른다.
+
+- **평가 protocol:** Collision env 평가는 P2(`+obs_fix=true +plan_history=3`)로 한다(E26).
+- **평가 noise:** CEM 결과는 같은 GPU에서도 실행마다 50-episode seed 하나에 ±4~8%p 흔들린다. 그래서 다음을 지킨다.
+  - 비교는 같은 GPU 종류, 같은 seed로 짝지어(paired) 한다.
+  - seed는 8개 이상(가능하면 16개)을 쓰고, 평균과 표준오차를 함께 적는다.
+  - 다른 세션이나 다른 GPU에서 잰 수치를 섞어 비교하지 않는다.
+- **비교 설계:** 실행 전에 대조군과 판정 기준을 `docs/experiments.md`의 목적과 설정에 먼저 적는다.
+  - 제안 모델은 gate on/off뿐 아니라 CF-JEPA와도 비교한다.
+  - 효과가 다른 요인 때문일 수 있으면 그 요인만 바꾼 대조군을 둔다. 예: E36은 학습을 더 한 효과, E37은 다시 계획한 횟수의 효과였다.
+- **비용**
+  - 기본 GPU는 L4다(A100의 약 1/3 비용). A100은 메모리나 속도가 꼭 필요할 때만 쓴다.
+  - A100 40GB에는 이 모델의 full 학습을 2개까지만 병렬로 올린다(E32에서 3개는 OOM).
+  - 학습에는 중간 판정 지점(예: epoch 1 평가)과 중단 기준을 미리 정한다.
+  - 같은 세션에서 data 수집, 학습, 평가를 이어서 해서 setup과 data 수집을 반복하지 않는다.
+- **Colab 세션 안전**
+  - 세션을 열 때 종료 기한을 정한다(예상 시간 + 1시간).
+  - 세션 안에서 자동 반납을 건다(`scripts/colab/selfstop.py`, 아래 참고). 로컬 감시 프로그램이 죽어도 세션이 기한에 꺼진다.
+  - 끝나면 `colab sessions`로 꺼진 것을 직접 확인한다.
+  - 세션은 이름을 지정해 끈다. 전부 끄는 명령은 쓰지 않는다. 다른 사람이나 다른 실험의 세션까지 꺼진 적이 있다.
+- **프로세스 중단:** 프로세스를 명령줄 패턴으로 찾아 한꺼번에 끄지 않는다(`pkill`의 full-command 매칭 옵션 등). 그 명령을 실행한 shell도 같은 패턴에 걸려 같이 죽는다(E37). `pgrep`으로 대상을 먼저 확인하고, PID로 끈다.
+- **결과 보존**
+  - 결과(log, weights)는 세션을 끄기 전에 받는다.
+  - 업로드와 다운로드는 파일 크기로 성공을 확인하고, 실패하면 다시 시도한다.
+  - 큰 파일(`.pt`, `.ckpt`, `.h5`)은 log 묶음에서 뺀다.
+- **상태 확인:** 감시 script의 출력만 믿지 않는다. GPU 사용률, 실행 중인 프로세스, log 진행을 직접 확인한다. 특히 pipeline 시작 직후, 단계가 바뀔 때, 직접 손을 댄 뒤에 확인한다.
+- **도구 (선택):** `scripts/colab/colab-guard`는 위 규칙의 일부를 자동화한다. 기한 등록, 기한이 지난 세션 종료, 세션 안 자동 반납 걸기, 위험한 명령을 막는 Claude Code hook을 제공한다. 설치와 사용법은 파일 머리에 있다. 설치 여부와 설정(하루 CU 한도 등)은 각자 정한다.
+
 ## 협업 규칙 (11/1 정함)
 
 - **역할 (중간 발표까지):** 강연우는 gate 구현과 모델 학습, 설규원은 Collision env와 data, 조하은은 평가와 발표 준비를 맡는다. CF-JEPA 재구현은 설규원이 했다(E3).
 - **코드 (GitHub):** 팀원 3명 모두 collaborator다. 작업 단위로 branch(`<이름>/<작업>`, 예: `yeonwoo/gate`)를 만들고 PR로 main에 합친다.
 - **결과물 (Proton Drive):** 그림, 영상, checkpoint, data는 공유 폴더의 `results/E<번호>_<이름>/`에 올리고, 폴더의 `README.txt`에 한 줄 설명을 더한다.
 - **실험 기록:** `docs/experiments.md`에 E 번호를 이어서 붙인다(현재 E37까지). 목적, 설정, 실행 명령, 결과, 남은 문제를 적는다. 실험 번호를 먼저 정하고 쓰면 번호가 겹치지 않는다.
-- **Colab:** 각자 자기 계정을 쓴다. 환경 준비는 `scripts/colab/setup_lewm.sh` 하나로 된다(약 10분, data 포함).
+- **Colab:** 각자 자기 계정을 쓴다. 환경 준비는 `scripts/colab/setup_lewm.sh` 하나로 된다(약 10분, data 포함). 운영 규칙은 위 "실험 운영 규칙"을 따른다.
 - **팀원에게 일을 줄 때:** 구체적인 구현 방법보다 요구사항(무엇이 되어야 하는지, 어떻게 확인하는지)을 준다. 간단한 일은 설규원이 직접 한다.
 
 ## 외부 자료
