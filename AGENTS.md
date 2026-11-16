@@ -133,6 +133,7 @@ This file provides guidance to AI agents when working with code in this reposito
 - **상한 (E28, E31):** 정답 simulator로 계획하면, interaction을 아는지 여부로 성공률이 r3b에서 35%p, r1x에서 28%p 차이 난다. 연구 질문 자체는 성립한다.
 - **gate의 강점과 한계 (E27~E36):** gate α는 contact를 잘 찾는다(AUROC 0.96~0.98, 상상 rollout에서도 0.94 이상). 하지만 h_int는 push 결과를 contact z^c 오차 기준으로 6~19%만 고친다. 그래서 planning 성공률에서 CF-JEPA를 공정 비교로 이긴 설정은 없다. 같이 학습하면 base가 나빠지고(E33), base를 고정하면 이득이 noise 수준이며(E35, +2.4%p), 낮은 lr로 fine-tune하면 h_int가 쓰이지 않는다(E36).
 - **다시 계획하기 (E37):** 25 step을 한 번에 실행하지 않고 더 자주 다시 계획하면, 어떤 모델이든 r1x 성공률이 약 60에서 75~79로 오른다. gate α로 다시 계획할 시점을 고르는 것은 무작위 시점보다 낫지 않았다.
+- **현재 목표 (11/16):** 최종 발표(11/26) 전에, 제안 방법이 Collision TwoRoom(r1x, P2)에서 CF-JEPA보다 planning 성공률이 공정 비교로 높다는 결과를 낸다. 다음 실험은 위 결과를 바탕으로 원인을 진단한 뒤 정한다. 개선안마다 근거, 예상 비용, 대조군, 실패 판정 기준을 함께 제시한다.
 
 ## 작업 규칙
 
