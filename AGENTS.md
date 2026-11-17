@@ -125,7 +125,7 @@ This file provides guidance to AI agents when working with code in this reposito
 - CF-JEPA가 distractor를 stable-worldmodel에 어떻게 넣었는지(코드 미공개)
 - Iso-Dream++의 학술지 게재본(TPAMI 등) 여부
 
-## 지금까지의 핵심 결과 (11/18, E42까지)
+## 지금까지의 핵심 결과 (11/18, E44까지)
 
 자세한 수치와 설정은 `docs/experiments.md`에 있다. 같은 실험을 반복하기 전에 해당 E 번호를 먼저 읽는다.
 
@@ -139,6 +139,8 @@ This file provides guidance to AI agents when working with code in this reposito
 - **planning 진단 (E40):** cost를 z^c 거리에서 agent 위치 거리(위치 label로 학습한 probe, 진단용)로 바꾸면 성공률이 CF-JEPA +5.5%p, 정답 obstacle 모델 +8.5%p 오른다. z^c에 섞인 obstacle 성분이 cost를 흐린다. 그래도 두 모델 차이는 +3.0%p로 남는다. 더 큰 병목은 planner가 고른 계획에서의 예측이다. 실패한 episode의 70~100%에서 모델은 도착한다고 예측했고, 1 block 뒤 위치 오차가 이미 19~27px다(수집 data에서는 5 block 뒤 4.5~15.9px). 첫 block에서 env가 낼 수 없는 거리를 예측하는 계획이 30~50%다. 후보 원인은 CEM이 범위 제한 없이 sample한 action(env는 [-1, 1]로 자른다)과, 첫 계획의 인공적인 과거 frame이다.
 - **action 범위 불일치 (E41):** CEM은 정규화한 action 공간에서 범위 없이 sample하고 env는 raw action을 [-1, 1]로 자른다. 고른 첫 block action의 약 절반이 범위 밖이었고, 모델은 env가 실행할 수 없는 이동을 예측했다. 모델 입력에서 같은 자르기를 하면(`+action_clip=true`) CF-JEPA가 60.8에서 73.4로 오른다(+12.6 ± 1.8%p, 16 seed). 이후 Collision env 평가는 P2 + `+action_clip=true`를 기준으로 한다. 이 상태에서도 정답 obstacle 모델은 CF-JEPA보다 −2.0 ± 1.6%p다. 고른 계획에서의 예측은 더 정확한데(3 block 뒤 contact 14.9 대 24.4px), 도착하는 계획을 찾지 못한다고 판단하는 episode가 많다.
 - **cost가 병목 (E42):** 범위 제한을 켜고 cost를 agent 위치 거리(정답 위치 label로 학습한 probe)로 바꾸면, 정답 obstacle 모델이 91.6, CF-JEPA가 85.1이다(+6.5 ± 1.2%p, 16 seed 중 13승 0패). 같은 두 모델이 z^c cost에서는 71.6 대 74.1이었다. interaction 정보의 이득은 정확한 예측, 그 예측을 제대로 읽는 cost, env와 같은 action 범위가 모두 있을 때 나타난다. 남은 단서는 위치 label(E43에서 action만으로 학습한 probe로 대체)과 정답 obstacle 입력이다.
+- **label 없는 위치 cost (E43):** action 누적합만으로 학습한 위치 probe는 같은 episode 안 상대 이동을 3.1px로 맞히지만 전체 위치 오차가 12.0px로 사전 기준(10px)에 못 미쳐 planning 평가를 하지 않았다.
+- **기존 benchmark (E44):** 범위 제한으로 CF-JEPA(Distractor TwoRoom N=2)가 84.8에서 95.4로 오른다(16승 0패, 논문 0.95). 공개 LeWM(TwoRoom N=0)은 85.9에서 80.4로 떨어진다(1승 14패). 범위 제한은 `sum_l2` cost를 쓰는 CF-JEPA 계열에서 큰 개선이고, 일반적인 개선은 아니다.
 - **분석 주의 (E40):** plan log에서 성공한 env는 위치가 멈춘 채 기록이 이어진다. 예측과 비교할 때 goal에 닿은 step 이후를 빼야 한다(`analyze_plan_log.py`에 반영).
 - **현재 목표 (11/16):** 최종 발표(11/26) 전에, 제안 방법이 Collision TwoRoom(r1x, P2)에서 CF-JEPA보다 planning 성공률이 공정 비교로 높다는 결과를 낸다. 다음 실험은 위 결과를 바탕으로 원인을 진단한 뒤 정한다. E42 이후의 질문은 "위치 label과 정답 obstacle 입력 없이도 이 이득이 남는가"다. 개선안마다 근거, 예상 비용, 대조군, 실패 판정 기준을 함께 제시한다.
 

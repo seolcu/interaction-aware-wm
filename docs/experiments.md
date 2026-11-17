@@ -1719,7 +1719,26 @@ Q3 (첫 계획 800개씩): 실패 episode 수는 `sum_l2` 207(CF-JEPA) / 227(정
 - 참고: 고른 action 중 env 범위 밖 비율(첫 block, 전체). 기존 성공률이 높아(0.86~0.94) 오를 여지가 6~14%p뿐이므로, 미달이어도 범위 밖 비율과 함께 "이 불일치가 충돌이 있는 환경에서 커진다"로 해석할 수 있다.
 - 비용 상한: L4 세션 1개, 6 CU.
 
-**결과:** (실행 후 적는다)
+**결과** (success rate %, seed 42~57(16개), L4 한 세션)
+
+| 모델 / 평가 env | 범위 제한 없음 | 범위 제한 | 차이 (paired) | 이긴 / 진 seed | 고른 action 중 범위 밖 (첫 block, 제한 없음) |
+|---|---|---|---|---|---|
+| CF-JEPA (`cfjepa_tworoom_n2`), Distractor TwoRoom N=2 | 84.8 | **95.4** | +10.62 ± 1.47 | 16 / 0 | 42.7% |
+| LeWM (`lewm-tworooms`), TwoRoom N=0 | 85.9 | 80.4 | −5.50 ± 0.87 | 1 / 14 | 13.8% |
+
+- Q1 통과(7.2 SE). CF-JEPA는 기존 benchmark에서도 범위 제한으로 논문 값(Table III 0.95)에 닿는다. E3에서 재구현이 논문보다 낮았던 것(0.88)은 이 불일치로 설명된다.
+- Q2 미달이고 방향이 반대다. LeWM은 범위 제한을 하면 일관되게 떨어진다. 제한 없이도 범위 밖 action을 적게 고른다(첫 block 14% 대 CF-JEPA 43%).
+- 참고: TwoRoom data의 action 정규화 통계에서 raw ±1이 약 ±1.15 표준편차다(표준편차 약 0.87). 학습 data에 [-1, 1] 밖 action이 많이 들어 있고(scripted policy의 noise), env는 그것을 자른 결과를 frame으로 남겼다. 즉 모델은 잘리기 전 action과 잘린 효과의 짝으로 학습됐다.
+
+**해석**
+- 범위 제한의 효과는 모델(또는 planning cost)에 따라 다르다. CF-JEPA는 `sum_l2`(모든 step의 거리 합)를 쓰는데, 이 cost는 빨리 가는 계획을 선호해 CEM이 범위 밖 action을 많이 고르고(43%), 거기서 모델의 외삽이 틀린다. LeWM은 마지막 step만 보는 cost라 범위 밖 action을 덜 고른다. LeWM에서 제한이 해가 되는 이유는 확인하지 못했다. 후보는 (1) cost 차이, (2) 학습 data에 범위 밖 action이 많아 LeWM이 그 영역을 이미 맞게 배웠고, 자르면 CEM의 탐색 분포만 좁아지는 것이다.
+- 발표에서는 "범위 제한은 일반적인 개선이 아니라, `sum_l2` cost를 쓰는 CF-JEPA 계열에서 큰 개선"으로 말한다.
+
+**다음:** LeWM에서 떨어지는 원인을 가르려면 cost만 바꾼 대조군(CF-JEPA + 마지막 step cost, LeWM + `sum_l2`, 각각 범위 제한 유무)이 필요하다. 팀과 정한 뒤 번호를 붙인다.
+
+**비용과 운영:** 첫 세션은 setup 확인 중 `colab exec` 연결이 끊긴 것("Connection was lost")을 setup 오류로 잘못 판정해 스스로 껐다. setup.log에서 나온 오류만 실패로 보도록 launch script를 고친 뒤 다시 띄웠다(00:45~02:20). 합계 3.02 CU(260.18 → 257.16).
+
+**결과물:** `outputs/e44/res/`(git 제외)에 `e44_logs.tgz`(평가 log), `status_live.txt`.
 
 ## 2026-11-18 · E43. label 없는 위치 cost: action만으로 학습한 위치 probe
 
