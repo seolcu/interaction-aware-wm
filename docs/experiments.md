@@ -1590,3 +1590,25 @@ Q3 (episode의 첫 계획 800개씩, goal에 닿기 전까지만 비교):
 **비용과 운영:** 세션 `e40` 약 3시간 10분(14:09~17:20), 6.20 CU(276.82 → 270.62). 상한 6 CU를 0.2 넘었다(2단계까지 간 경우의 추정이 빠듯했다). 시작 직후 세션 안 자동 반납 재설정이 응답하지 않아 손으로 다시 걸었다. 감시 서비스가 결과 저장, 세션 종료, 종료 확인까지 마쳤다.
 
 **결과물:** `outputs/e40/res/`(git 제외)에 log 묶음 `e40_logs.tgz`, `status_live.txt`, 조건·seed별 `*_planlog.npz`, `planlog_*.txt`(자동 집계, 수정 전), probe `stable-wm/checkpoints/pos_probe_e32_cf.pt`.
+
+## 2026-11-17 · E41. CEM action 범위 제한 (학습 없음)
+
+**목적:** E40에서 planner가 고른 첫 계획은 첫 block에 agent가 실제보다 멀리 간다고 예측했다(예측 31px, 실제 20px, env에서 불가능한 거리 30~50%). 후보 원인 (A)를 확인한다. CEM은 정규화한 action 공간에서 범위 없이 sample하고, env는 `step()`에서 raw action을 [-1, 1]로 자른다. 모델은 잘리기 전 action을 받으므로 env가 실행할 수 없는 action에서 큰 이동을 예측할 수 있다. 모델 입력에서 같은 자르기를 하면 이 불일치가 없어진다. 자르기는 모든 모델에 똑같이 적용하는 planning 쪽 수정이고, 제안 방법은 아니다. 이 불일치가 interaction 정보의 이득을 가리고 있었는지(Q2)가 제안 방법과 관련된 질문이다.
+
+**구현**
+- `scripts/eval.py +action_clip=true`: `model.get_cost`가 받는 후보 action을 env의 action 범위를 정규화 공간으로 옮긴 [lo, hi]로 자른다. 정규화가 affine이라 env의 clamp와 정확히 같다(로컬에서 확인, 차이 2e-8). 실행하는 action(CEM mean)은 그대로 두고 env가 자른다. planning에 넣는 과거 action도 잘린 값으로 넣는다.
+- plan log에 고른 action을 함께 저장하고, 조건과 무관하게 "고른 action 중 env 범위 밖 비율"(첫 block, 전체)을 `[actions]` 줄로 찍는다.
+
+**설정**
+- 모델: `e32_cf`(CF-JEPA), `e39_obsbig`(정답 obstacle 입력). 학습하지 않는다. cost는 기존 `sum_l2`(label 없음).
+- 조건 4개: 모델 2 × 자르기 2. 모두 P2, r1x, `+plan_log`, L4 한 세션에서 seed를 짝지어 잰다.
+- 1단계: seed 42~49. Q1 또는 Q2의 평균이 +2%p 이상이면 2단계(seed 50~57)를 네 조건 모두 잰다.
+- 계획 기록 분석에는 E40의 위치 probe(`pos_probe_e32_cf.pt`)를 쓴다.
+
+**판정 기준 (실행 전에 정함. seed 16개 paired, +5%p 이상이고 표준오차의 3배 이상)**
+- Q1 자르기가 CF-JEPA를 돕는가: `e32_cf`에서 clip − 자르지 않음.
+- Q2 자르면 interaction 정보가 값을 하는가: clip에서 `e39_obsbig` − `e32_cf`. 통과해도 정답 obstacle 입력이라는 단서가 붙는다.
+- Q3 원인 확인: 자르지 않은 조건에서 고른 action의 첫 block 범위 밖 비율이 10% 미만이면 (A)는 주 원인이 아니고, 첫 계획의 인공적인 과거 frame(B) 쪽을 다음에 본다. clip 조건에서 첫 block 예측 이동이 실제 이동에 가까워지는지(E40: 31 대 20px)도 함께 본다.
+- 비용 상한: L4 세션 1개, 6 CU.
+
+**결과:** (실행 후 적는다)

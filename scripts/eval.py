@@ -15,6 +15,10 @@
   iawm.pos_probe). probe는 scripts/fit_pos_probe.py가 만든다.
 - `+plan_log=<npz 경로>`: 계획마다 고른 action 열의 예측 z^c와, env step마다 실제 agent 위치를 기록한다(E40).
   scripts/analyze_plan_log.py가 읽어 "planner가 고른 계획에서 예측이 맞았는가"를 낸다.
+- `+action_clip=true`: CEM 후보 action을 모델에 넣기 전에 env의 action 범위로 자른다(E41). env는 `step()`에서 raw
+  action을 [-1, 1]로 자르는데, CEM은 정규화한 action 공간에서 범위 없이 sample한다. 자르지 않으면 모델은 env가 실행할 수
+  없는 action으로 예측한다. 정규화가 affine이므로 정규화 공간에서 자르면 env의 clamp와 정확히 같다. 실행하는 action(CEM의
+  mean)은 그대로 두고 env가 자른다. plan log에는 고른 action과 범위 밖 비율을 함께 남긴다(설정과 무관하게).
 - 정답 obstacle 입력 모델(predictor.int_oracle_key=obs_oracle, E39): planning 때 env에서 obstacle의 과거·현재·미래 상태를
   계산해 h_int에 넣는다. `+plan_history`가 모델의 history 길이와 같아야 한다. 설정 없이 모델을 보고 켠다.
 
@@ -60,7 +64,7 @@ def img_transform(cfg):
 
 
 def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, oracle_horizon: int = 0,
-                        plan_log: bool = False):
+                        plan_log: bool = False, clip_history: bool = False):
     """WorldModelPolicy에 두 가지를 더한다 (E26).
 
     obs_fix: World._evaluate_from_dataset은 env를 dataset 시작 상태로 맞춘 뒤 첫 관측 pixels를 dataset
@@ -153,13 +157,38 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
             action = super().get_action(info_dict, **kwargs)
             for i in range(n):
                 a = np.asarray(action[i], dtype=np.float32)
-                self.raw_actions[i].append(np.nan_to_num(a))  # 끝난 env는 nan -> 0 (더 쓰이지 않는다)
+                a = np.nan_to_num(a)  # 끝난 env는 nan -> 0 (더 쓰이지 않는다)
+                if clip_history:  # E41: 과거 action도 env가 실제로 실행한 값(잘린 값)으로 넣는다
+                    a = np.clip(a, -1.0, 1.0)
+                self.raw_actions[i].append(a)
             return action
 
     return HistoryPolicy
 
 
-def wrap_solver_count_and_gate(policy, model, tau, rand_p=None, seed=0, plan_log=False):
+def action_bounds(process, action_block, low=-1.0, high=1.0):
+    """env의 raw action 범위 [low, high]를 정규화 공간으로 옮긴다. 반환: (lo, hi) (action_block * A,) tensor.
+
+    CEM의 action 차원은 (block, A)를 펼친 것이다(policy가 (H, block, A)로 되돌린다)라 A 차원 값을 block번 이어 붙인다.
+    """
+    sc = process['action']
+    a, b = sc.transform(np.array([[low, low]], np.float32)), sc.transform(np.array([[high, high]], np.float32))
+    lo, hi = np.minimum(a, b)[0], np.maximum(a, b)[0]
+    return torch.tensor(np.tile(lo, action_block), dtype=torch.float32), torch.tensor(np.tile(hi, action_block), dtype=torch.float32)
+
+
+def clip_model_actions(model, lo, hi):
+    """E41: model.get_cost가 받는 후보 action을 [lo, hi]로 자른다 (env의 clamp를 모델 입력에서 재현)."""
+    orig = model.get_cost
+
+    def get_cost(info_dict, action_candidates):
+        l, h = lo.to(action_candidates.device, action_candidates.dtype), hi.to(action_candidates.device, action_candidates.dtype)
+        return orig(info_dict, torch.maximum(torch.minimum(action_candidates, h), l))
+
+    model.get_cost = get_cost
+
+
+def wrap_solver_count_and_gate(policy, model, tau, rand_p=None, seed=0, plan_log=False, bounds=None):
     """E37: 계획 횟수를 세고, tau가 있으면 gate α로 실행 구간을 자른다(gate-triggered replanning).
 
     CEM이 고른 계획(최종 mean)을 한 번 더 상상 rollout해서 block마다 gate α를 읽는다. history 3 frame +
@@ -171,7 +200,8 @@ def wrap_solver_count_and_gate(policy, model, tau, rand_p=None, seed=0, plan_log
     rng = np.random.default_rng(seed + 12345)
     policy.n_plans = 0
     policy.n_exec_log = []
-    policy.plan_records = []  # E40: (env index, step 번호, 고른 계획의 예측 z^c, goal z^c)
+    policy.plan_records = []  # E40: (env index, step 번호, 고른 계획의 예측 z^c, goal z^c, 고른 action)
+    policy.oob_log = []  # E41: (첫 block의 범위 밖 비율, 전체 비율, 계획 수)
 
     def one_sample(info_dict):
         """solver가 받은 info를 후보 1개짜리 모양 (B, 1, ...)으로 바꾼다."""
@@ -220,7 +250,12 @@ def wrap_solver_count_and_gate(policy, model, tau, rand_p=None, seed=0, plan_log
             envs = list(getattr(policy, '_plan_envs', []))
             assert len(envs) == B, (len(envs), B)
             pred_c, goal_c = plan_pred(info_dict, out['actions'])
-            policy.plan_records.append((np.array(envs), np.array(policy._plan_t), pred_c, goal_c))
+            acts = out['actions'].float().cpu()  # (B, K, block*A) 정규화 공간, 자르기 전 (E41)
+            policy.plan_records.append((np.array(envs), np.array(policy._plan_t), pred_c, goal_c, acts.numpy()))
+            if bounds is not None:
+                lo, hi = bounds
+                o = (acts < lo) | (acts > hi)
+                policy.oob_log.append((o[:, 0].float().mean().item(), o.float().mean().item(), len(acts)))
         n_exec = torch.full((B,), K, dtype=torch.long)
         if tau is not None:
             a = plan_alpha(info_dict, out['actions'])[:, :K]
@@ -349,6 +384,10 @@ def run(cfg: DictConfig):
                 Path(swm.data.utils.get_cache_dir(sub_folder="checkpoints"), str(cfg.pos_probe)), "cuda")
         if cfg.get("contact_cost") is not None:  # E29: 상상 α로 충돌 회피 cost (iawm.cfjepa_gate.CFJEPA.get_cost)
             model.contact_cost = float(cfg.contact_cost)
+        bounds = action_bounds(process, int(cfg.plan_config.action_block))
+        if bool(cfg.get("action_clip", False)):  # E41
+            clip_model_actions(model, *bounds)
+            print(f"[action clip] normalized bounds lo {bounds[0][:2].tolist()} hi {bounds[1][:2].tolist()}", flush=True)
         config = swm.PlanConfig(**cfg.plan_config)
         solver = hydra.utils.instantiate(cfg.solver, model=model)
         plan_history = int(cfg.get("plan_history", 1))
@@ -365,6 +404,7 @@ def run(cfg: DictConfig):
             policy_cls = make_history_policy(
                 policy_cls, plan_history, cfg.plan_config.action_block, obs_fix,
                 oracle_horizon=cfg.plan_config.horizon if plan_oracle else 0, plan_log=plan_log,
+                clip_history=bool(cfg.get("action_clip", False)),
             )
         replan = str(cfg.get("replan", "none"))
         if replan in ("gate", "random"):  # E37: gate α가 tau를 넘는 block까지만 실행하고 다시 계획
@@ -374,7 +414,7 @@ def run(cfg: DictConfig):
         )
         wrap_solver_count_and_gate(policy, model, float(cfg.get("replan_tau", 0.5)) if replan == "gate" else None,
                                    float(cfg.get("replan_p", 0.5)) if replan == "random" else None, int(cfg.seed),
-                                   plan_log=plan_log)
+                                   plan_log=plan_log, bounds=bounds)
 
     else:
         policy = swm.policy.RandomPolicy()
@@ -443,8 +483,13 @@ def run(cfg: DictConfig):
         out_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez(out_path, env=np.concatenate([r[0] for r in recs]), t=np.concatenate([r[1] for r in recs]),
                  pred_c=np.concatenate([r[2] for r in recs]), goal_c=np.concatenate([r[3] for r in recs]), pos=pos,
+                 actions=np.concatenate([r[4] for r in recs]),
                  history=int(cfg.get("plan_history", 1)), block=int(cfg.plan_config.action_block),
                  success=np.asarray(metrics.get("episode_successes", []), dtype=bool))
+        if getattr(policy, "oob_log", None):  # E41: 고른 action 중 env 범위 밖(env가 자르는) 비율
+            ol = np.array(policy.oob_log)
+            w = ol[:, 2] / ol[:, 2].sum()
+            print(f"[actions] out of env bounds: first block {(ol[:, 0] * w).sum():.4f} all blocks {(ol[:, 1] * w).sum():.4f}", flush=True)
         print(f"[plan log] {len(recs)} solver calls, {sum(len(r[0]) for r in recs)} plans -> {out_path}", flush=True)
     if getattr(policy, "sim_err", None):
         err = np.array(policy.sim_err)
