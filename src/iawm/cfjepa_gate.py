@@ -246,6 +246,9 @@ class CFJEPA(LeWM):
         if goal_emb.ndim == pred_c.ndim - 1:  # get_cost가 만든 goal_emb는 (B, T, D)다
             goal_emb = goal_emb[:, None]
         goal_c = goal_emb[..., -1:, : self.dim_c].detach()  # (B, 1|S, 1, d_c)
+        if self.cost == 'agent_px':  # E40 진단: z^c에서 읽은 agent 위치의 거리 (iawm.pos_probe)
+            from iawm.pos_probe import agent_px_cost
+            return agent_px_cost(self, info_dict)
         if self.cost == 'sum_l2':  # 논문 Eq. 7
             return (pred_c - goal_c).norm(dim=-1).sum(dim=-1)
         # LeWM 방식: 마지막 step의 squared error

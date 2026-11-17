@@ -1518,3 +1518,30 @@ epoch 4 (seed 42~45): `e32_cf` 51.0, `e33_res` learned 54.0 / off 49.5, `e33_res
 **비용과 운영:** 세션 `e38` 4시간 34분(20:13~00:47), 8.85 CU(285.67 → 276.82). smoke test가 첫 실행에서 검사 script의 예외 상황(episode 첫 frame에서 obstacle이 방 경계에 붙어 시작)을 잡았고, 수집을 멈추지 않고 고쳐 다시 올렸다. 중간에 로컬 PC를 재부팅했고 감시 서비스가 다시 떠서 결과 저장과 세션 종료까지 마쳤다.
 
 **결과물:** `outputs/e38/res/`(git 제외)에 log 묶음 `e38_logs.tgz`, `status_live.txt`, `stable-wm/checkpoints/e39_*/`의 `config.json`, `metrics.json`, `int_only_best.pt`(학습한 interaction module만. `e32_cf`와 합치면 복원된다).
+
+## 2026-11-17 · E40. Planning 진단: cost와 planner가 고른 계획에서의 예측 (학습 없음)
+
+**목적:** E39에서 정답 obstacle 입력 모델은 5 block 앞 agent 위치 오차를 contact clip에서 15.9px에서 6.5px로 줄였지만 planning 성공률은 +3.4 ± 1.7%p였다. 예측이 정확해져도 planning이 따라오지 않는 이유를 두 가지로 나눠 잰다.
+1. **cost:** planning cost는 z^c 거리인데 z^c에 obstacle 위치가 들어 있다(E38). goal image에는 obstacle이 없으므로 cost에 agent와 무관한 항이 섞인다.
+2. **planner가 고른 계획에서의 예측:** E39의 예측 오차는 수집 data의 action에서 잰 것이다. CEM은 모델이 낙관적으로 틀리는 action 열을 골라낼 수 있다(2607.10362).
+
+**구현**
+- `src/iawm/pos_probe.py`, `scripts/fit_pos_probe.py`: z^c에서 agent와 obstacle 위치(px)를 읽는 MLP probe. base(`e32_cf`) encoder의 frame latent로 학습한다. gate 모델도 같은 encoder라 같이 쓴다.
+- `cost=agent_px`(`CFJEPA.criterion`): 예측한 z^c에서 읽은 agent 위치와 goal image의 z^c에서 읽은 agent 위치의 거리(px)를 모든 step에 더한다. `sum_l2`와 같은 꼴이고 공간만 다르다. `scripts/eval.py +cost=agent_px +pos_probe=<파일>`.
+- `scripts/eval.py +plan_log=<npz>`: 계획마다 고른 action 열의 예측 z^c와 goal z^c, env step마다 실제 agent 위치·target 위치·contact를 기록한다. `scripts/analyze_plan_log.py`가 episode의 첫 계획(25 step을 한 번에 실행)에서 예측 위치와 실제 위치를 비교한다.
+- `scripts/merge_int_weights.py`: E39에서 받아 둔 `int_only_best.pt`와 base를 합쳐 `e39_obsbig`를 복원한다.
+
+**설정**
+- 모델: `e32_cf`(CF-JEPA), `e39_obsbig`(정답 obstacle 입력, E39). 학습은 하지 않는다.
+- data: 평가 시작 상태용 `collision_tworoom`(2,000 episode, 이전과 같은 seed), probe용 `r1p`(r1x 조건, seed 555, 2,000 episode).
+- 조건 4개: 모델 2 × cost 2(`sum_l2`, `agent_px`). 모두 P2, r1x, `+plan_log`, L4 한 세션에서 seed를 짝지어 잰다.
+- 1단계: seed 42~49. `e39_obsbig`의 (agent_px − sum_l2) 또는 agent_px에서의 (`e39_obsbig` − `e32_cf`)가 +2%p 이상이면 2단계(seed 50~57)를 네 조건 모두 잰다.
+
+**판정 기준 (실행 전에 정함. seed 16개 paired, +5%p 이상이고 표준오차의 3배 이상)**
+- Q1 cost가 병목인가: `e39_obsbig`에서 agent_px − sum_l2.
+- Q2 cost를 고치면 interaction 정보가 값을 하는가: agent_px에서 `e39_obsbig` − `e32_cf`. 통과해도 정답 obstacle 입력과 위치 label로 만든 cost라는 단서가 붙는다.
+- Q3 planner가 모델이 틀리는 계획을 고르는가(sum_l2 조건의 계획 기록): 실패한 episode 중 "계획이 도착한다고 예측한"(예측 위치가 어느 block에서든 goal 16px 안) 비율이 50% 이상이면 그렇다고 본다. planner가 고른 계획에서의 5 block 예측 오차를 E39의 data 위 오차(CF-JEPA 4.8 / 15.9px, `e39_obsbig` 4.5 / 6.5px, non-contact / contact)와 비교한다.
+- 한계: `agent_px` cost는 위치 label로 학습한 probe를 쓰므로 진단용이다. Q3의 k block 오차는 그 시점까지 끝나지 않은 episode에서만 잴 수 있어(성공하면 env가 reset된다) 실패 쪽으로 치우친다.
+- 비용 상한: L4 세션 1개, 6 CU.
+
+**결과:** (실행 후 적는다)

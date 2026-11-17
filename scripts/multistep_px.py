@@ -38,36 +38,9 @@ def positions(f):
 
 
 def fit_probe(X, Y, device, steps=6000, hidden=256, seed=0):
-    """z^c -> [agent xy, obstacle xy] MLP. 마지막 5%는 학습에 쓰지 않고 오차를 잰다. 반환: 함수, (agent, obstacle) px 오차."""
-    g = torch.Generator().manual_seed(seed)
-    idx = torch.randperm(len(X), generator=g)
-    n_te = max(1000, len(X) // 20)
-    te, tr = idx[:n_te], idx[n_te:]
-    X, Y = torch.from_numpy(X).to(device), torch.from_numpy(Y).to(device)
-    xm, xs = X[tr].mean(0), X[tr].std(0) + 1e-6
-    ym, ys = Y[tr].mean(0), Y[tr].std(0) + 1e-6
-    torch.manual_seed(seed)
-    net = torch.nn.Sequential(torch.nn.Linear(X.shape[1], hidden), torch.nn.GELU(), torch.nn.Linear(hidden, hidden),
-                              torch.nn.GELU(), torch.nn.Linear(hidden, Y.shape[1])).to(device)
-    opt = torch.optim.AdamW(net.parameters(), lr=1e-3, weight_decay=1e-4)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, steps)
-    tr = tr.to(device)
-    for _ in range(steps):
-        b = tr[torch.randint(0, len(tr), (2048,), device=device)]
-        loss = (net((X[b] - xm) / xs) - (Y[b] - ym) / ys).pow(2).mean()
-        opt.zero_grad()
-        loss.backward()
-        opt.step()
-        sched.step()
-    net.eval()
-
-    @torch.no_grad()
-    def probe(z):
-        return net((z.float() - xm) / xs) * ys + ym
-
-    p = probe(X[te.to(device)])
-    d = (p - Y[te.to(device)])
-    return probe, (d[:, :2].norm(dim=-1).mean().item(), d[:, 2:].norm(dim=-1).mean().item())
+    """z^c -> [agent xy, obstacle xy] MLP (iawm.pos_probe). 반환: probe, (agent, obstacle) held-out px 오차."""
+    from iawm import pos_probe
+    return pos_probe.fit(X, Y, device, steps=steps, hidden=hidden, seed=seed)
 
 
 @torch.no_grad()

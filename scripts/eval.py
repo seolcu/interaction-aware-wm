@@ -11,6 +11,10 @@
 - `+replan=contact` (oracle) / `+replan=gate +replan_tau=τ` (gate 모델) /
   `+replan=random +replan_p=p` (대조군: block마다 확률 p로 끊는다): 충돌이 예상되는 block까지만 실행하고 다시 계획한다(E37).
 - `+contact_cost=λ`: gate 모델의 상상 α로 충돌 회피 cost를 더한다(E29). oracle_avoid에서는 정답 충돌에 같은 cost를 준다.
+- `+cost=agent_px +pos_probe=<파일>`: planning cost를 z^c 거리 대신 z^c에서 읽은 agent 위치의 거리(px)로 바꾼다(E40 진단,
+  iawm.pos_probe). probe는 scripts/fit_pos_probe.py가 만든다.
+- `+plan_log=<npz 경로>`: 계획마다 고른 action 열의 예측 z^c와, env step마다 실제 agent 위치를 기록한다(E40).
+  scripts/analyze_plan_log.py가 읽어 "planner가 고른 계획에서 예측이 맞았는가"를 낸다.
 - 정답 obstacle 입력 모델(predictor.int_oracle_key=obs_oracle, E39): planning 때 env에서 obstacle의 과거·현재·미래 상태를
   계산해 h_int에 넣는다. `+plan_history`가 모델의 history 길이와 같아야 한다. 설정 없이 모델을 보고 켠다.
 
@@ -55,7 +59,8 @@ def img_transform(cfg):
     return transform
 
 
-def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, oracle_horizon: int = 0):
+def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, oracle_horizon: int = 0,
+                        plan_log: bool = False):
     """WorldModelPolicy에 두 가지를 더한다 (E26).
 
     obs_fix: World._evaluate_from_dataset은 env를 dataset 시작 상태로 맞춘 뒤 첫 관측 pixels를 dataset
@@ -67,8 +72,13 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
     oracle_horizon > 0 (E39): 정답 obstacle 상태를 info의 'obs_oracle' (n, history + horizon - 1, 6K)로 넣는다.
         history frame의 상태는 frame과 같이 기록해 둔 값이고, 미래는 env에서 obstacle만 앞으로 돌려 계산한다
         (obstacle은 action과 무관하게 움직이므로 후보 action과 상관없이 정확하다). iawm.cfjepa_gate.CFJEPA.rollout이 읽는다.
+    plan_log (E40): env step마다 [agent 위치, target 위치, contact]를 기록하고, 이번 호출에서 새로 계획할 env와
+        그 시점의 step 번호를 남긴다(wrap_solver_count_and_gate가 계획의 예측과 묶는다).
     """
     from iawm import obs_oracle as oo
+
+    def _np(t):
+        return np.asarray(t.detach().cpu().numpy() if torch.is_tensor(t) else t, dtype=np.float32).reshape(-1)
 
     class HistoryPolicy(base_cls):
         def set_env(self, env):
@@ -77,6 +87,8 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
             self.frames = [[] for _ in range(n)]   # env step마다의 frame (HWC uint8), 시작 전 frame 포함
             self.raw_actions = [[] for _ in range(n)]  # env step마다 실행한 raw action, 시작 전은 0
             self.obs_states = [[] for _ in range(n)]   # frames와 같은 index의 obstacle (pos, vel) (E39)
+            self.pos_log = [[] for _ in range(n)]      # env step마다 [agent xy, target xy, contact] (E40)
+            self._plan_envs, self._plan_t = [], []
             self.started = np.zeros(n, dtype=bool)
 
         def _unwrapped(self, i):
@@ -102,6 +114,18 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
                 self.frames[i].append(pix[i, -1].copy())
                 if oracle_horizon > 0:
                     self.obs_states[i].append(oo.current_state(self._unwrapped(i)))
+            if plan_log:
+                for i in range(n):
+                    e = self._unwrapped(i)
+                    self.pos_log[i].append(np.concatenate(
+                        [_np(e.agent_position), _np(e.target_position), [float(getattr(e, 'contact', False))]]))
+                # WorldModelPolicy.get_action과 같은 규칙으로, 이번 호출에서 새로 계획할 env를 미리 구한다
+                flush = info_dict.get('_needs_flush')
+                flush = np.zeros(n, bool) if flush is None else np.asarray(flush, bool)
+                term = info_dict.get('terminated')
+                dead = np.zeros(n, bool) if term is None else np.asarray(term, bool)
+                self._plan_envs = [i for i in range(n) if (len(self._action_buffer[i]) == 0 or flush[i]) and not dead[i]]
+                self._plan_t = [len(self.pos_log[i]) - 1 for i in self._plan_envs]
             info_dict['pixels'] = pix
             if history > 1:
                 idx = [-1 - frameskip * j for j in range(history - 1, -1, -1)]  # t-(h-1)fs ... t
@@ -135,7 +159,7 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
     return HistoryPolicy
 
 
-def wrap_solver_count_and_gate(policy, model, tau, rand_p=None, seed=0):
+def wrap_solver_count_and_gate(policy, model, tau, rand_p=None, seed=0, plan_log=False):
     """E37: 계획 횟수를 세고, tau가 있으면 gate α로 실행 구간을 자른다(gate-triggered replanning).
 
     CEM이 고른 계획(최종 mean)을 한 번 더 상상 rollout해서 block마다 gate α를 읽는다. history 3 frame +
@@ -147,6 +171,28 @@ def wrap_solver_count_and_gate(policy, model, tau, rand_p=None, seed=0):
     rng = np.random.default_rng(seed + 12345)
     policy.n_plans = 0
     policy.n_exec_log = []
+    policy.plan_records = []  # E40: (env index, step 번호, 고른 계획의 예측 z^c, goal z^c)
+
+    def one_sample(info_dict):
+        """solver가 받은 info를 후보 1개짜리 모양 (B, 1, ...)으로 바꾼다."""
+        infos = {}
+        for k, v in info_dict.items():
+            if torch.is_tensor(v):
+                v = v.to(device=solver.device, dtype=solver.dtype if v.is_floating_point() else None).unsqueeze(1)
+            elif isinstance(v, np.ndarray):
+                v = v[:, None]
+            infos[k] = v
+        return infos
+
+    def plan_pred(info_dict, actions):
+        """고른 action 열을 한 번 더 rollout해서 예측 z^c (B, T, d_c)와 goal z^c (B, d_c)를 낸다."""
+        infos = one_sample(info_dict)
+        with torch.no_grad():
+            model.get_cost(infos, actions[:, None].to(device=solver.device, dtype=solver.dtype))
+        d_c = getattr(model, 'dim_c', infos['predicted_emb'].size(-1))
+        ge = infos['goal_emb']
+        ge = ge[:, -1] if ge.ndim == 3 else ge[:, 0, -1]
+        return infos['predicted_emb'][:, 0, :, :d_c].float().cpu().numpy(), ge[:, :d_c].float().cpu().numpy()
 
     def plan_alpha(info_dict, actions):
         pred = model.predictor
@@ -157,13 +203,7 @@ def wrap_solver_count_and_gate(policy, model, tau, rand_p=None, seed=0):
             alphas.append(pred.last_alpha[:, -1, 0].float())
             return out
 
-        infos = {}
-        for k, v in info_dict.items():
-            if torch.is_tensor(v):
-                v = v.to(device=solver.device, dtype=solver.dtype if v.is_floating_point() else None).unsqueeze(1)
-            elif isinstance(v, np.ndarray):
-                v = v[:, None]
-            infos[k] = v
+        infos = one_sample(info_dict)
         pred.forward = forward_rec
         try:
             with torch.no_grad():
@@ -176,6 +216,11 @@ def wrap_solver_count_and_gate(policy, model, tau, rand_p=None, seed=0):
         out = orig_solve(info_dict, init_action)
         B, K = out['actions'].shape[:2]
         policy.n_plans += B
+        if plan_log:
+            envs = list(getattr(policy, '_plan_envs', []))
+            assert len(envs) == B, (len(envs), B)
+            pred_c, goal_c = plan_pred(info_dict, out['actions'])
+            policy.plan_records.append((np.array(envs), np.array(policy._plan_t), pred_c, goal_c))
         n_exec = torch.full((B,), K, dtype=torch.long)
         if tau is not None:
             a = plan_alpha(info_dict, out['actions'])[:, :K]
@@ -298,12 +343,17 @@ def run(cfg: DictConfig):
             model.predictor.gate_mode = cfg.gate_mode
         if cfg.get("plan_combine") is not None:  # E34: gate on/off rollout cost를 max|mean으로 합친다
             model.plan_combine = str(cfg.plan_combine)
+        if cfg.get("pos_probe") is not None:  # E40: cost=agent_px가 쓰는 위치 probe
+            from iawm import pos_probe
+            model.pos_probe = pos_probe.load(
+                Path(swm.data.utils.get_cache_dir(sub_folder="checkpoints"), str(cfg.pos_probe)), "cuda")
         if cfg.get("contact_cost") is not None:  # E29: 상상 α로 충돌 회피 cost (iawm.cfjepa_gate.CFJEPA.get_cost)
             model.contact_cost = float(cfg.contact_cost)
         config = swm.PlanConfig(**cfg.plan_config)
         solver = hydra.utils.instantiate(cfg.solver, model=model)
         plan_history = int(cfg.get("plan_history", 1))
         obs_fix = bool(cfg.get("obs_fix", False))
+        plan_log = cfg.get("plan_log") is not None
         policy_cls = swm.policy.WorldModelPolicy
         pr = model.predictor
         plan_oracle = (getattr(pr, "int_oracle_dim", 0) > 0 and getattr(pr, "int_oracle_key", "") == "obs_oracle"
@@ -311,10 +361,10 @@ def run(cfg: DictConfig):
         if plan_oracle:  # E39: 정답 obstacle 상태를 planning에 넣는다
             assert plan_history == pr.num_frames, "정답 obstacle 입력 모델은 +plan_history가 모델 history 길이와 같아야 한다"
             print(f"[plan oracle] obs_oracle dim {pr.int_oracle_dim} horizon {cfg.plan_config.horizon}", flush=True)
-        if plan_history > 1 or obs_fix:  # E26: 첫 관측을 실제 env 화면으로, planning에 과거 frame 넣기
+        if plan_history > 1 or obs_fix or plan_log:  # E26: 첫 관측을 실제 env 화면으로, planning에 과거 frame 넣기
             policy_cls = make_history_policy(
                 policy_cls, plan_history, cfg.plan_config.action_block, obs_fix,
-                oracle_horizon=cfg.plan_config.horizon if plan_oracle else 0,
+                oracle_horizon=cfg.plan_config.horizon if plan_oracle else 0, plan_log=plan_log,
             )
         replan = str(cfg.get("replan", "none"))
         if replan in ("gate", "random"):  # E37: gate α가 tau를 넘는 block까지만 실행하고 다시 계획
@@ -323,7 +373,8 @@ def run(cfg: DictConfig):
             solver=solver, config=config, process=process, transform=transform
         )
         wrap_solver_count_and_gate(policy, model, float(cfg.get("replan_tau", 0.5)) if replan == "gate" else None,
-                                   float(cfg.get("replan_p", 0.5)) if replan == "random" else None, int(cfg.seed))
+                                   float(cfg.get("replan_p", 0.5)) if replan == "random" else None, int(cfg.seed),
+                                   plan_log=plan_log)
 
     else:
         policy = swm.policy.RandomPolicy()
@@ -382,6 +433,19 @@ def run(cfg: DictConfig):
         print(f"[plans] total {policy.n_plans} per_episode {policy.n_plans / cfg.eval.num_eval:.2f}")
         if getattr(policy, "n_exec_log", None):
             print(f"[plans] executed blocks per plan mean {np.mean(policy.n_exec_log):.2f} hist {np.bincount(policy.n_exec_log, minlength=6)[1:].tolist()}")
+    if cfg.get("plan_log") is not None and getattr(policy, "plan_records", None):  # E40: 계획 기록 저장
+        recs = policy.plan_records
+        n_env, t_max = len(policy.pos_log), max(len(p) for p in policy.pos_log)
+        pos = np.full((n_env, t_max, 5), np.nan, dtype=np.float32)
+        for i, pl in enumerate(policy.pos_log):
+            pos[i, :len(pl)] = np.stack(pl)
+        out_path = Path(str(cfg.plan_log))
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(out_path, env=np.concatenate([r[0] for r in recs]), t=np.concatenate([r[1] for r in recs]),
+                 pred_c=np.concatenate([r[2] for r in recs]), goal_c=np.concatenate([r[3] for r in recs]), pos=pos,
+                 history=int(cfg.get("plan_history", 1)), block=int(cfg.plan_config.action_block),
+                 success=np.asarray(metrics.get("episode_successes", []), dtype=bool))
+        print(f"[plan log] {len(recs)} solver calls, {sum(len(r[0]) for r in recs)} plans -> {out_path}", flush=True)
     if getattr(policy, "sim_err", None):
         err = np.array(policy.sim_err)
         print(f"[oracle] sim error mean {err.mean():.4f} p50 {np.median(err):.4f} p99 {np.quantile(err, .99):.4f} "
