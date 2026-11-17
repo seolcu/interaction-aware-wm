@@ -1671,3 +1671,21 @@ Q3 (episode의 첫 계획 800개씩, goal에 닿기 전까지만 비교, 위치 
 - 비용 상한: L4 세션 1개, 6 CU.
 
 **결과:** (실행 후 적는다)
+
+## 2026-11-18 · E44. 기존 benchmark(TwoRoom)에서 CEM action 범위 제한 (학습 없음)
+
+**목적:** E41의 action 범위 불일치(CEM은 범위 없이 sample, env는 [-1, 1]로 자른다)는 Collision env만의 문제가 아니라 stable-worldmodel의 TwoRoom 계열 전체에 있다. 기존 benchmark에서도 범위 제한이 성공률을 바꾸는지 잰다. 수업 피드백("기존 benchmark task의 success rate를 함께 제시")에 해당한다. PushT env는 action을 자르지 않고 그대로 실행하므로(`stable_worldmodel/envs/pusht/env.py`의 `step`) 같은 불일치가 없어 제외한다.
+
+**설정**
+- CF-JEPA: `cfjepa_tworoom_n2`(E3, Distractor TwoRoom N=2로 학습), Distractor TwoRoom N=2에서 평가(논문 Table III 조건). cost는 논문대로 `sum_l2`.
+- LeWM: 공개 checkpoint `lewm-tworooms`(E0), 원래 TwoRoom(N=0)에서 평가(논문 Table II 조건).
+- 조건 4개: 모델 2 × 범위 제한 없음/있음. 평가 설정은 E0, E3과 같다(CEM 300 × 30, 50 episode, budget 50). L4 한 세션에서 seed를 짝지어 잰다.
+- 1단계: seed 42~49. Q1 또는 Q2의 평균이 +2%p 이상이면 2단계(seed 50~57)를 잰다. 둘 다 미달이면 seed 8개로 끝낸다.
+
+**판정 기준 (실행 전에 정함. paired, +5%p 이상이고 표준오차의 3배 이상)**
+- Q1: CF-JEPA(N=2)에서 범위 제한 − 없음.
+- Q2: LeWM(N=0)에서 범위 제한 − 없음.
+- 참고: 고른 action 중 env 범위 밖 비율(첫 block, 전체). 기존 성공률이 높아(0.86~0.94) 오를 여지가 6~14%p뿐이므로, 미달이어도 범위 밖 비율과 함께 "이 불일치가 충돌이 있는 환경에서 커진다"로 해석할 수 있다.
+- 비용 상한: L4 세션 1개, 6 CU.
+
+**결과:** (실행 후 적는다)
