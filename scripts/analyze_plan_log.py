@@ -51,12 +51,17 @@ def one(path, probe, device):
             'pred_true_dist': np.linalg.norm(fut - target[:, None], axis=2)}    # (P, K) 실제 target 기준
     err = np.full((len(env), K), np.nan, dtype=np.float32)
     con = np.zeros((len(env), K), bool)
+    # 성공한 env는 그 step 뒤로 위치가 멈춘다(기록은 계속된다). 멈춘 위치와 예측을 비교하면 오차가 부풀므로,
+    # goal에 처음 닿은 step까지만 비교한다. (E40 첫 집계에서는 이 처리가 없어 오차가 16~36px로 나왔다.)
+    dist = np.linalg.norm(pos[env, :, :2] - pos[env, :, 2:4], axis=2)       # (P, steps)
+    hit = np.where((dist < REACH).any(1), (dist < REACH).argmax(1), pos.shape[1])
+    rows['hit'] = hit
     for j, e in enumerate(env):
         for k in range(1, K + 1):
             s = k * blk
-            if s >= pos.shape[1] or np.isnan(pos[e, s, 0]):
+            if s >= pos.shape[1] or np.isnan(pos[e, s, 0]) or s > hit[j]:
                 break
-            # 성공하면 World가 env를 바로 reset한다. target이 바뀌었으면 그 뒤는 다른 episode다.
+            # 성공하면 World가 env를 바로 reset할 수도 있다. target이 바뀌었으면 그 뒤는 다른 episode다.
             if np.abs(pos[e, 1:s + 1, 2:4] - target[j]).max() > 1e-3:
                 break
             err[j, k - 1] = np.linalg.norm(fut[j, k - 1] - pos[e, s, :2])
@@ -72,12 +77,14 @@ def main():
     ap.add_argument('--name', default='plans')
     args = ap.parse_args()
 
-    import stable_worldmodel as swm
-
     from iawm import pos_probe
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    probe = pos_probe.load(Path(swm.data.utils.get_cache_dir(sub_folder='checkpoints'), args.probe), device)
+    path = Path(args.probe)
+    if not path.exists():  # 파일 이름만 주면 $STABLEWM_HOME/checkpoints에서 찾는다
+        import stable_worldmodel as swm
+        path = Path(swm.data.utils.get_cache_dir(sub_folder='checkpoints'), args.probe)
+    probe = pos_probe.load(path, device)
     parts = [one(p, probe, device) for p in args.logs.split(',') if Path(p).exists()]
     assert parts, 'no plan logs found'
     r = {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}

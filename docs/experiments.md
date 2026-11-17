@@ -1544,4 +1544,49 @@ epoch 4 (seed 42~45): `e32_cf` 51.0, `e33_res` learned 54.0 / off 49.5, `e33_res
 - 한계: `agent_px` cost는 위치 label로 학습한 probe를 쓰므로 진단용이다. Q3의 k block 오차는 그 시점까지 끝나지 않은 episode에서만 잴 수 있어(성공하면 env가 reset된다) 실패 쪽으로 치우친다.
 - 비용 상한: L4 세션 1개, 6 CU.
 
-**결과:** (실행 후 적는다)
+**결과**
+
+위치 probe(`pos_probe_e32_cf.pt`, `r1p` 144,956 frame)의 held-out 오차는 agent 0.68px, obstacle 1.28px이다.
+
+Planning 성공률(%), r1x, P2, seed 42~57(16개), L4 한 세션:
+
+| 조건 | 평균 |
+|---|---|
+| `e32_cf` + `sum_l2` (CF-JEPA) | 61.8 |
+| `e32_cf` + `agent_px` | 67.2 |
+| `e39_obsbig` + `sum_l2` | 61.8 |
+| `e39_obsbig` + `agent_px` | 70.2 |
+
+| 비교 (paired) | 차이 ± 표준오차 | 이긴 / 진 seed | 판정 |
+|---|---|---|---|
+| Q1 `e39_obsbig`: agent_px − sum_l2 | +8.50 ± 2.55 | 13 / 2 | 통과 (3.3 SE) |
+| Q2 agent_px: `e39_obsbig` − `e32_cf` | +3.00 ± 2.15 | 9 / 7 | 미달 |
+| (참고) `e32_cf`: agent_px − sum_l2 | +5.50 ± 1.42 | 15 / 1 | 기준 이상 (3.9 SE) |
+| (참고) sum_l2: `e39_obsbig` − `e32_cf` | +0.00 ± 2.24 | 9 / 7 | 차이 없음 (E39는 +3.4) |
+
+1단계(seed 8개)에서 Q1 +4.50, Q2 +1.50이라 2단계로 넘어갔다.
+
+Q3 (episode의 첫 계획 800개씩, goal에 닿기 전까지만 비교):
+
+| 조건 | 성공 | 실패 중 "예측으로는 도착" | 1 block 뒤 오차 (non-contact / contact) | 5 block 뒤 오차 (non-contact / contact) |
+|---|---|---|---|---|
+| `e32_cf` + `sum_l2` | 61.8 | 75.2% (230/306) | 19.4 / 21.9px | 30.4 / 46.7px |
+| `e39_obsbig` + `sum_l2` | 61.8 | 70.6% (216/306) | 18.8 / 19.6px | 28.1 / 42.8px |
+| `e32_cf` + `agent_px` | 67.2 | 100% (262/262) | 22.9 / 27.2px | 32.4 / 50.2px |
+| `e39_obsbig` + `agent_px` | 70.2 | 100% (238/238) | 25.7 / 26.9px | 29.9 / 46.5px |
+
+- 집계 수정: 처음 자동 집계(`status_live.txt`의 `RESULT_PLAN`)는 goal에 닿은 뒤의 step도 비교했다. 성공한 env는 그 자리에 멈춘 채 기록이 이어지므로 오차가 섞인다. `analyze_plan_log.py`가 goal에 처음 닿은 step까지만 비교하도록 고쳐 로컬(CPU)에서 다시 계산했고, 위 표는 고친 값이다. "예측으로는 도착" 비율은 이 수정과 무관하다.
+- 계획 시점에 현재 frame에서 읽은 agent 위치 오차는 2.9~3.3px로, 예측 오차(19~27px)보다 훨씬 작다. 오차는 probe가 아니라 예측에서 나온다.
+- 첫 block에서 모델이 예측한 agent 이동 거리는 평균 30.9px(`e32_cf`, sum_l2)인데 실제는 20.2px다. 예측 이동이 env에서 불가능한 거리(speed 5 × 5 step × √2 = 35.4px 초과)인 계획이 첫 block에서 30~50%다(실제로 이 거리를 넘은 block은 1% 안팎이고, 모두 obstacle에 밀린 경우다). 둘째 block부터는 그 비율이 1~6%로 줄어든다.
+
+**해석**
+- **cost는 병목이다(Q1 통과).** z^c 거리 대신 agent 위치 거리로 계획하면 두 모델 모두 오른다(+5.5, +8.5%p). z^c에 섞인 obstacle 성분이 cost를 흐린다는 E38의 해석과 맞는다. 다만 `agent_px`는 위치 label로 학습한 probe를 쓰므로 제안 방법이 아니다.
+- **cost를 고쳐도 interaction 정보의 이득은 작다(Q2 미달).** 정답 obstacle 입력 모델이 CF-JEPA보다 +3.0%p로, E39(+3.4%p)와 비슷하다.
+- **planner는 모델이 틀리는 계획을 고른다(Q3, 기준 50% 이상).** 실패한 episode의 70~100%에서 모델은 "도착한다"고 예측했다. planner가 고른 계획에서의 예측 오차는 1 block 뒤에 이미 19~27px로, E39에서 수집 data의 action으로 잰 5 block 뒤 오차(4.5~15.9px)보다 크다. 정답 obstacle 입력 모델도 마찬가지라, contact 예측을 고친 이득이 이 오차에 묻힌다.
+- 오차는 첫 block에 몰려 있고, 그 내용은 "agent가 실제보다 멀리 간다"는 낙관적 예측이다. 후보 원인은 둘이다. (A) CEM은 정규화한 action 공간에서 범위 제한 없이 sample하고, env는 `step()`에서 action을 [-1, 1]로 자른다(`torch.clamp`). 모델은 잘리기 전 값을 받으므로 env가 실행할 수 없는 큰 action에서 큰 이동을 예측할 수 있다. (B) 첫 계획의 과거 frame은 "시작 위치에 멈춰서 action 0"으로 만든 것이라(E26, `render_past`) 학습 data와 분포가 다르다. 이번 기록에는 고른 action 값이 없어 둘을 가르지 못했다. r1x의 budget이 30 step이라 첫 계획(25 step)이 episode를 거의 정한다.
+
+**다음:** 가장 큰 병목은 첫 계획에서의 낙관적 예측이다. 다음 실험은 (A)를 직접 확인한다. CEM 후보를 env의 action 범위로 자른 조건과 자르지 않은 조건을 두 모델에 대해 짝지어 재고, 고른 action 값을 기록해 범위 밖 비율을 잰다. 팀과 정한 뒤 번호를 붙인다.
+
+**비용과 운영:** 세션 `e40` 약 3시간 10분(14:09~17:20), 6.20 CU(276.82 → 270.62). 상한 6 CU를 0.2 넘었다(2단계까지 간 경우의 추정이 빠듯했다). 시작 직후 세션 안 자동 반납 재설정이 응답하지 않아 손으로 다시 걸었다. 감시 서비스가 결과 저장, 세션 종료, 종료 확인까지 마쳤다.
+
+**결과물:** `outputs/e40/res/`(git 제외)에 log 묶음 `e40_logs.tgz`, `status_live.txt`, 조건·seed별 `*_planlog.npz`, `planlog_*.txt`(자동 집계, 수정 전), probe `stable-wm/checkpoints/pos_probe_e32_cf.pt`.

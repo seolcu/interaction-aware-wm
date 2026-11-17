@@ -125,7 +125,7 @@ This file provides guidance to AI agents when working with code in this reposito
 - CF-JEPA가 distractor를 stable-worldmodel에 어떻게 넣었는지(코드 미공개)
 - Iso-Dream++의 학술지 게재본(TPAMI 등) 여부
 
-## 지금까지의 핵심 결과 (11/17, E39까지)
+## 지금까지의 핵심 결과 (11/17, E40까지)
 
 자세한 수치와 설정은 `docs/experiments.md`에 있다. 같은 실험을 반복하기 전에 해당 E 번호를 먼저 읽는다.
 
@@ -136,7 +136,9 @@ This file provides guidance to AI agents when working with code in this reposito
 - **분리 붕괴 (E38):** Collision data로 학습한 CF-JEPA(`e32_cf`)는 z^c에 obstacle 위치를 1.8px 정밀도로 담는다(z^u는 11.5px). g가 z^u를 보지 못할 뿐 encoder는 막지 않기 때문이다. gate가 z^u에서 가져올 새 정보가 없었다. latent에서 부족한 것은 obstacle의 속도다(오차 1.7px/step, 모델 한 step에 8px 남짓).
 - **상한 (E39):** base를 고정하고 h_int에 정답 obstacle 궤적을 넣으면 contact z^c 오차가 74% 줄고, 5 block 앞 agent 위치 오차가 15.9px에서 6.5px로 준다. 정답 없이 같은 방식으로 학습하면 5.5%다. 그런데 planning 성공률은 CF-JEPA 대비 +3.4 ± 1.7%p(seed 16개 paired)로, 미리 정한 기준(+5%p, 표준오차 3배)에 못 미쳤다. 병목이 push 예측에서 planning 쪽(cost, CEM)으로 옮겨 갔다.
 - **진단 도구 주의 (E38):** `probe_residual.py`의 B는 정답 state의 효과를 크게 과소평가했다(B 0.14 대 실제 h_int 74%). "이 정보로 잔차를 맞힐 수 있는가"는 `train_int_frozen.py`의 held-out 수치로 잰다. base를 고정한 실험은 이 script로 한다(encoding 한 번 뒤 epoch당 약 80초).
-- **현재 목표 (11/16):** 최종 발표(11/26) 전에, 제안 방법이 Collision TwoRoom(r1x, P2)에서 CF-JEPA보다 planning 성공률이 공정 비교로 높다는 결과를 낸다. 다음 실험은 위 결과를 바탕으로 원인을 진단한 뒤 정한다. E39 이후의 질문은 "예측이 정확해져도 planning이 따라오지 않는 이유"다. 개선안마다 근거, 예상 비용, 대조군, 실패 판정 기준을 함께 제시한다.
+- **planning 진단 (E40):** cost를 z^c 거리에서 agent 위치 거리(위치 label로 학습한 probe, 진단용)로 바꾸면 성공률이 CF-JEPA +5.5%p, 정답 obstacle 모델 +8.5%p 오른다. z^c에 섞인 obstacle 성분이 cost를 흐린다. 그래도 두 모델 차이는 +3.0%p로 남는다. 더 큰 병목은 planner가 고른 계획에서의 예측이다. 실패한 episode의 70~100%에서 모델은 도착한다고 예측했고, 1 block 뒤 위치 오차가 이미 19~27px다(수집 data에서는 5 block 뒤 4.5~15.9px). 첫 block에서 env가 낼 수 없는 거리를 예측하는 계획이 30~50%다. 후보 원인은 CEM이 범위 제한 없이 sample한 action(env는 [-1, 1]로 자른다)과, 첫 계획의 인공적인 과거 frame이다.
+- **분석 주의 (E40):** plan log에서 성공한 env는 위치가 멈춘 채 기록이 이어진다. 예측과 비교할 때 goal에 닿은 step 이후를 빼야 한다(`analyze_plan_log.py`에 반영).
+- **현재 목표 (11/16):** 최종 발표(11/26) 전에, 제안 방법이 Collision TwoRoom(r1x, P2)에서 CF-JEPA보다 planning 성공률이 공정 비교로 높다는 결과를 낸다. 다음 실험은 위 결과를 바탕으로 원인을 진단한 뒤 정한다. E40 이후의 질문은 "planner가 고른 계획에서 모델이 왜 낙관적으로 틀리는가"다. 개선안마다 근거, 예상 비용, 대조군, 실패 판정 기준을 함께 제시한다.
 
 ## 작업 규칙
 
@@ -186,7 +188,7 @@ E25~E37에서 CU를 낭비하거나 결론을 잘못 낼 뻔한 경험에서 나
 - **역할 (중간 발표까지):** 강연우는 gate 구현과 모델 학습, 설규원은 Collision env와 data, 조하은은 평가와 발표 준비를 맡는다. CF-JEPA 재구현은 설규원이 했다(E3).
 - **코드 (GitHub):** 팀원 3명 모두 collaborator다. 작업 단위로 branch(`<이름>/<작업>`, 예: `yeonwoo/gate`)를 만들고 PR로 main에 합친다.
 - **결과물 (Proton Drive):** 그림, 영상, checkpoint, data는 공유 폴더의 `results/E<번호>_<이름>/`에 올리고, 폴더의 `README.txt`에 한 줄 설명을 더한다.
-- **실험 기록:** `docs/experiments.md`에 E 번호를 이어서 붙인다(현재 E39까지). 목적, 설정, 실행 명령, 결과, 남은 문제를 적는다. 실험 번호를 먼저 정하고 쓰면 번호가 겹치지 않는다.
+- **실험 기록:** `docs/experiments.md`에 E 번호를 이어서 붙인다(현재 E40까지). 목적, 설정, 실행 명령, 결과, 남은 문제를 적는다. 실험 번호를 먼저 정하고 쓰면 번호가 겹치지 않는다.
 - **Colab:** 각자 자기 계정을 쓴다. 환경 준비는 `scripts/colab/setup_lewm.sh` 하나로 된다(약 10분, data 포함). 운영 규칙은 위 "실험 운영 규칙"을 따른다.
 - **팀원에게 일을 줄 때:** 구체적인 구현 방법보다 요구사항(무엇이 되어야 하는지, 어떻게 확인하는지)을 준다. 간단한 일은 설규원이 직접 한다.
 
