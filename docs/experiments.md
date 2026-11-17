@@ -1739,4 +1739,18 @@ Q3 (첫 계획 800개씩): 실패 episode 수는 `sum_l2` 207(CF-JEPA) / 227(정
 - 단서: 통과해도 obstacle 입력은 정답(E39의 `obs_oracle`)이다. obstacle 상태를 화면에서 읽는 부분은 남은 과제다.
 - 비용 상한: L4 세션 1개, 6 CU.
 
-**결과:** (실행 후 적는다)
+**결과: probe 판정에서 멈췄다(planning 평가는 하지 않았다).**
+
+| probe | disp (같은 episode 두 frame) | abs (평행 이동만 맞춤) | affine | affine 축척 (x, y) |
+|---|---|---|---|---|
+| 기본 (seed 0) | 3.07px | **11.98px** | 7.56px | 1.17, 1.06 |
+| seed 1 (확인) | 3.36px | 11.25px | 6.90px | 1.16, 1.06 |
+| action을 한 step 늦춘 정렬 (확인) | 9.02px | 23.27px | 13.86px | 1.41, 1.28 |
+
+- 기본 probe의 abs 오차가 기준(10px)을 넘어 사전 규칙대로 멈췄다. 같은 세션에서 두 가지를 확인했다. seed를 바꿔도 같고, action 정렬을 한 step 바꾸면 크게 나빠진다. `World.collect`가 action을 "frame t에서 t+1로 가는 action"으로 저장하는 것(`ep['action'].append(ep['action'].pop(0))`)과 맞고, 정렬 문제는 아니다.
+- 해석: probe는 같은 episode 안의 상대 이동은 3px 남짓으로 맞히지만, 전체 위치를 일관되게 놓지는 못한다(축척이 x에서 17% 작다). 학습 쌍의 간격이 10 step 이하라 먼 거리의 일관성이 약하고, 벽에 막히거나 obstacle에 밀린 구간이 action 누적합과 어긋나는 것이 후보다.
+- 판정 기준을 abs로 둔 것이 planning에 맞는 기준이었는지는 따로 따져 볼 문제다. planning cost가 쓰는 것은 같은 시작점에서 나온 후보 계획들의 상대 순서이고, 이에 가까운 지표는 disp(3.1px)다. 다만 이것은 결과를 본 뒤의 판단이므로, planning 평가를 하려면 새 번호로 기준을 다시 적고 한다.
+
+**비용과 운영:** 첫 세션은 생성 직후 자동 반납 걸기에 kernel이 응답하지 않아 launch script가 바로 껐다(약 5분). launch script가 3번까지 다시 시도하도록 고친 뒤 다시 띄웠다(00:13~00:38). 합계 0.96 CU(261.14 → 260.18).
+
+**결과물:** `outputs/e43/res/`(git 제외)에 `e43_logs.tgz`(probe 학습 log 3개), `status_live.txt`.
