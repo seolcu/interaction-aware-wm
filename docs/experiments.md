@@ -1653,3 +1653,21 @@ Q3 (episode의 첫 계획 800개씩, goal에 닿기 전까지만 비교, 위치 
 **비용과 운영:** 세션 `e41` 약 2시간 33분(18:28~21:01), 4.92 CU(270.62 → 265.70). 문제 없이 끝났다.
 
 **결과물:** `outputs/e41/res/`(git 제외)에 `e41_logs.tgz`, `status_live.txt`, 조건·seed별 `*_planlog.npz`(고른 action 포함), `planlog_*.txt`.
+
+## 2026-11-18 · E42. 범위 제한 + 위치 cost (학습 없음)
+
+**목적:** E41에서 action 범위를 제한하자 정답 obstacle 모델은 planner가 고른 계획에서 CF-JEPA보다 정확하게 예측했지만, 성공률은 −2.0 ± 1.6%p였다. E37의 정답 simulator 상한에서 interaction 지식의 이득은 25 step을 한 번에 실행하는 지금의 protocol에서 크고(blind 70.0 대 aware 96.7), 자주 다시 계획하면 거의 사라진다(blind 95.3). 그래서 이 protocol에서 정확한 예측이 성공률로 이어지지 않는 이유를 가른다. 후보는 cost(z^c 거리에 obstacle 성분이 섞인다, E40)와 긴 구간 예측 오차(5 block 뒤 13~25px, E41)다. 위치 cost는 정답 simulator가 쓰는 "실제 위치 거리"에 가까우므로, 이것으로 바꿨을 때 차이가 생기면 cost가 병목이다.
+
+**설정**
+- 모델: `e32_cf`(CF-JEPA), `e39_obsbig`(정답 obstacle 입력). 학습하지 않는다.
+- 조건 4개: 모델 2 × cost 2(`sum_l2`, `agent_px`), 모두 `+action_clip=true`, P2, r1x, `+plan_log`. L4 한 세션에서 seed를 짝지어 잰다. 위치 probe는 E40의 `pos_probe_e32_cf.pt`.
+- 1단계: seed 42~49. Q1의 평균이 +2%p 이상이거나 Q2 중 하나가 +2%p 이상이면 2단계(seed 50~57)를 네 조건 모두 잰다.
+
+**판정 기준 (실행 전에 정함. seed 16개 paired, +5%p 이상이고 표준오차의 3배 이상)**
+- Q1 (주 질문): `agent_px`에서 `e39_obsbig` − `e32_cf`. 통과하면 cost가 병목이고, label 없는 위치 cost(E43)로 넘어간다. 미달이면 남은 한계는 긴 구간 예측 오차이고, E43은 하지 않는다.
+- Q2 (참고): 모델별 `agent_px` − `sum_l2`. E40(clip 없음)의 +5.5(CF-JEPA), +8.5(정답 obstacle)와 비교한다.
+- Q3 (참고): 실패한 episode 중 "예측으로는 도착"과 "예측 미도착"의 비율. 위치 cost에서 정답 obstacle 모델의 "예측 미도착" 실패가 줄어드는지 본다.
+- 한계: `agent_px`는 위치 label로 학습한 probe를 쓰므로 진단용이다.
+- 비용 상한: L4 세션 1개, 6 CU.
+
+**결과:** (실행 후 적는다)
