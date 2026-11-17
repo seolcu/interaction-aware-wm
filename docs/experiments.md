@@ -1670,7 +1670,38 @@ Q3 (episode의 첫 계획 800개씩, goal에 닿기 전까지만 비교, 위치 
 - 한계: `agent_px`는 위치 label로 학습한 probe를 쓰므로 진단용이다.
 - 비용 상한: L4 세션 1개, 6 CU.
 
-**결과:** (실행 후 적는다)
+**결과**
+
+Planning 성공률(%), r1x, P2 + `+action_clip=true`, seed 42~57(16개), L4 한 세션:
+
+| 조건 | 평균 |
+|---|---|
+| `e32_cf` + `sum_l2` (CF-JEPA) | 74.1 |
+| `e39_obsbig` + `sum_l2` | 71.6 |
+| `e32_cf` + `agent_px` | 85.1 |
+| `e39_obsbig` + `agent_px` | **91.6** |
+
+| 비교 (paired) | 차이 ± 표준오차 | 이긴 / 진 seed | 판정 |
+|---|---|---|---|
+| Q1 `agent_px`: `e39_obsbig` − `e32_cf` | +6.50 ± 1.23 | 13 / 0 | 통과 (5.3 SE) |
+| Q2 `e32_cf`: `agent_px` − `sum_l2` | +11.00 ± 1.95 | 15 / 1 | |
+| Q2 `e39_obsbig`: `agent_px` − `sum_l2` | +20.00 ± 1.88 | 16 / 0 | |
+| (참고) `sum_l2`: `e39_obsbig` − `e32_cf` | −2.50 ± 1.96 | 6 / 9 | E41(−2.0)과 같다 |
+
+1단계(seed 8개)는 Q1 +8.00 ± 1.65, 8 / 0이었다. clip 조건의 CF-JEPA(74.1)는 E41의 73.4와 같은 수준이다.
+
+Q3 (첫 계획 800개씩): 실패 episode 수는 `sum_l2` 207(CF-JEPA) / 227(정답 obstacle), `agent_px` 119 / 67이다. 위치 cost에서는 실패의 87~92%가 "예측으로는 도착"이다. 위치 cost는 계획을 goal에 닿게 최적화하므로 남은 실패는 예측 오류 쪽으로 몰린다. 정답 obstacle 모델의 5 block 뒤 non-contact 예측 오차는 위치 cost에서 3.0px(CF-JEPA 46.1px)로, 고른 계획에서도 정확하다. contact 쪽 오차는 두 모델 모두 40px대로 남는다(성공해서 goal에 닿은 뒤 구간을 빼므로 남은 표본이 어려운 경우로 치우친다).
+
+**해석**
+- **cost가 병목이었다.** cost를 agent 위치 거리로 바꾸면 정답 obstacle 모델이 CF-JEPA보다 6.5%p 높고(16 seed 중 진 seed 없음), E37의 정답 simulator 상한(aware 96.7)에 가까워진다. 같은 모델이 z^c cost에서는 CF-JEPA보다 2.5%p 낮았다. z^c 거리에는 obstacle 위치가 섞여 있고(E38), 정답 obstacle 모델은 obstacle의 움직임까지 정확히 예측하므로 그 성분이 cost를 더 크게 흔든다고 본다.
+- interaction 정보의 이득은 "정확한 예측 + 그 예측을 제대로 읽는 cost + env와 같은 action 범위"가 모두 갖춰질 때 성공률로 나타난다. E39~E41에서 이득이 없던 이유는 뒤의 두 조건이 빠져 있었기 때문이다.
+- 단서: 위치 cost는 정답 위치 label로 학습한 probe를 쓰고, obstacle 입력도 정답이다. 다음은 cost에서 label을 없앤다(E43).
+
+**다음:** E43(action만으로 학습한 위치 probe로 같은 비교)을 사전 기록대로 실행한다.
+
+**비용과 운영:** 세션 `e42` 약 2시간 22분(21:40~00:02), 4.56 CU(265.70 → 261.14). 문제 없이 끝났다.
+
+**결과물:** `outputs/e42/res/`(git 제외)에 log 묶음, `status_live.txt`, 조건·seed별 plan log.
 
 ## 2026-11-18 · E44. 기존 benchmark(TwoRoom)에서 CEM action 범위 제한 (학습 없음)
 
