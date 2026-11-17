@@ -1689,3 +1689,23 @@ Q3 (episode의 첫 계획 800개씩, goal에 닿기 전까지만 비교, 위치 
 - 비용 상한: L4 세션 1개, 6 CU.
 
 **결과:** (실행 후 적는다)
+
+## 2026-11-18 · E43. label 없는 위치 cost: action만으로 학습한 위치 probe
+
+**목적:** E42에서 위치 cost(정답 위치 label로 학습한 probe)를 쓰면 정답 obstacle 모델이 CF-JEPA를 앞서는지 잰다. 이 실험은 그 위치 cost를 label 없이 만든다. TwoRoom에서 agent는 한 step에 `clip(a, -1, 1) × speed`만큼 움직인다(벽과 obstacle에 막히거나 밀리지 않으면). 그래서 같은 episode의 두 frame 사이 이동은 data에 이미 있는 action의 누적합으로 정해진다. z^c → 2차원 위치 MLP f를 `f(z_{t+k}) − f(z_t) ≈ speed · Σ clip(a_i)`로 학습한다. 벽과 push 구간은 Huber loss로 영향을 줄이고, contact label도 쓰지 않는다. 학습에 쓰는 것은 frame과 action뿐이므로 CF-JEPA의 학습 가정(위치 label 없음)을 지킨다. E42 Q1이 통과할 때만 실행한다.
+
+**구현:** `scripts/fit_odom_probe.py`. 저장 형식은 `iawm.pos_probe`와 같아 `+cost=agent_px +pos_probe=odom_probe_e32_cf.pt`로 쓴다. 정답 위치는 held-out 보고(disp: 같은 episode 두 frame의 이동 오차, abs: 평행 이동 하나만 맞춘 위치 오차, affine: 참고)에만 쓴다. 벽이 있는 합성 random walk에서 위치를 0.2px로 복원하는 것을 로컬에서 확인했다.
+
+**설정**
+- probe 학습: `e32_cf` encoder의 frame latent, `r1p`(r1x 조건 2,000 episode, E40과 같은 data). 학습 전에 기준을 정한다: held-out abs 오차가 10px을 넘으면 planning 평가를 하지 않고 멈춘다.
+- 조건 4개, 모두 P2 + `+action_clip=true`, r1x, `+plan_log`, L4 한 세션 paired: `e32_cf` + `sum_l2`(CF-JEPA 기준), `e32_cf` + odom cost, `e39_obsbig` + odom cost, `e39_obsbig` + 정답 위치 cost(참고, label 상한).
+- 1단계 seed 42~49, Q1 또는 Q2가 +2%p 이상이면 2단계 seed 50~57.
+
+**판정 기준 (실행 전에 정함. seed 16개 paired, +5%p 이상이고 표준오차의 3배 이상)**
+- Q1 (주 질문, 공정 비교): odom cost에서 `e39_obsbig` − `e32_cf`. 같은 label 없는 cost를 쓴 두 모델의 차이다.
+- Q2 (최종 비교): `e39_obsbig` + odom cost − `e32_cf` + `sum_l2`. 제안 구성 전체와 CF-JEPA(범위 제한 포함) 그대로의 차이다.
+- 참고: `e32_cf`에서 odom − `sum_l2`, `e39_obsbig`에서 정답 위치 cost − odom cost(label 없는 cost가 label cost를 얼마나 따라가는가).
+- 단서: 통과해도 obstacle 입력은 정답(E39의 `obs_oracle`)이다. obstacle 상태를 화면에서 읽는 부분은 남은 과제다.
+- 비용 상한: L4 세션 1개, 6 CU.
+
+**결과:** (실행 후 적는다)
