@@ -252,10 +252,11 @@ def wrap_solver_count_and_gate(policy, model, tau, rand_p=None, seed=0, plan_log
             pred_c, goal_c = plan_pred(info_dict, out['actions'])
             acts = out['actions'].float().cpu()  # (B, K, block*A) 정규화 공간, 자르기 전 (E41)
             policy.plan_records.append((np.array(envs), np.array(policy._plan_t), pred_c, goal_c, acts.numpy()))
-            if bounds is not None:
-                lo, hi = bounds
-                o = (acts < lo) | (acts > hi)
-                policy.oob_log.append((o[:, 0].float().mean().item(), o.float().mean().item(), len(acts)))
+        if bounds is not None:  # E41/E44: 고른 action 중 env 범위 밖 비율 (plan_log와 무관하게 센다)
+            lo, hi = bounds
+            acts = out['actions'].float().cpu()
+            o = (acts < lo) | (acts > hi)
+            policy.oob_log.append((o[:, 0].float().mean().item(), o.float().mean().item(), len(acts)))
         n_exec = torch.full((B,), K, dtype=torch.long)
         if tau is not None:
             a = plan_alpha(info_dict, out['actions'])[:, :K]
@@ -486,11 +487,11 @@ def run(cfg: DictConfig):
                  actions=np.concatenate([r[4] for r in recs]),
                  history=int(cfg.get("plan_history", 1)), block=int(cfg.plan_config.action_block),
                  success=np.asarray(metrics.get("episode_successes", []), dtype=bool))
-        if getattr(policy, "oob_log", None):  # E41: 고른 action 중 env 범위 밖(env가 자르는) 비율
-            ol = np.array(policy.oob_log)
-            w = ol[:, 2] / ol[:, 2].sum()
-            print(f"[actions] out of env bounds: first block {(ol[:, 0] * w).sum():.4f} all blocks {(ol[:, 1] * w).sum():.4f}", flush=True)
         print(f"[plan log] {len(recs)} solver calls, {sum(len(r[0]) for r in recs)} plans -> {out_path}", flush=True)
+    if getattr(policy, "oob_log", None):  # E41: 고른 action 중 env 범위 밖(env가 자르는) 비율
+        ol = np.array(policy.oob_log)
+        w = ol[:, 2] / ol[:, 2].sum()
+        print(f"[actions] out of env bounds: first block {(ol[:, 0] * w).sum():.4f} all blocks {(ol[:, 1] * w).sum():.4f}", flush=True)
     if getattr(policy, "sim_err", None):
         err = np.array(policy.sim_err)
         print(f"[oracle] sim error mean {err.mean():.4f} p50 {np.median(err):.4f} p99 {np.quantile(err, .99):.4f} "
