@@ -207,16 +207,32 @@ class CFJEPA(LeWM):
     def rollout(self, info, action_sequence, history_size: int = None):
         """LeWM.rollout + 정답 obstacle 상태 (E39).
 
+        E45: int_oracle_key가 'forecast'이면 forecaster로 같은 모양의 info['forecast']를 만들어 같은 길로 넣는다.
         info에 'obs_oracle' (B, S, F, D)가 있고 predictor가 oracle 입력을 받으면(int_oracle_dim > 0),
         예측할 때마다 그 window의 frame에 해당하는 값을 predictor.oracle에 넣는다. LeWM.rollout의 t번째
         예측은 frame lo..lo+HS-1 (lo = max(0, H + t - HS))을 입력으로 쓴다. 없으면 LeWM.rollout과 같다.
         """
         pred = self.predictor
-        orc = info.get('obs_oracle') if getattr(pred, 'int_oracle_dim', 0) > 0 else None
-        if orc is None or getattr(pred, 'gate_mode', 'off') == 'off':
-            return super().rollout(info, action_sequence, history_size)
         HS = history_size if history_size is not None else getattr(pred, 'num_frames', 3)
         H = info['pixels'].size(2)
+        key = getattr(pred, 'int_oracle_key', 'obs_oracle')
+        if (key == 'forecast' and getattr(pred, 'forecaster', None) is not None and getattr(pred, 'int_oracle_dim', 0) > 0
+                and getattr(pred, 'gate_mode', 'off') != 'off' and 'forecast' not in info):
+            # E45: history latent에서 forecaster를 굴려 frame마다의 feature를 만든다. action과 무관하므로 후보 전체가
+            # 같은 값을 쓰고, 같은 계획의 CEM 반복 동안 info에 남겨 다시 쓴다(LeWM.rollout의 'emb' cache와 같다).
+            B, S, T = action_sequence.shape[:3]
+            if 'emb' not in info:  # LeWM.rollout과 같은 방법으로 history를 encoding해 둔다(rollout이 그대로 다시 쓴다)
+                _init = {k: v[:, 0] for k, v in info.items() if torch.is_tensor(v) and k != 'action'}
+                _init = self.encode(_init)
+                info['emb'] = _init['emb'].detach().unsqueeze(1).expand(B, S, -1, -1)
+            feat = pred.forecaster.plan_features(info['emb'][:, 0].float(), T)  # frame 0 .. H + n_steps - 1 (T = H + n_steps)
+            info['forecast'] = feat[:, None].expand(B, S, -1, -1)
+            if not getattr(pred, '_fc_logged', False):  # smoke test가 확인하는 줄 (한 번만)
+                pred._fc_logged = True
+                print('[plan forecast] features', tuple(info['forecast'].shape), flush=True)
+        orc = info.get(key) if getattr(pred, 'int_oracle_dim', 0) > 0 else None
+        if orc is None or getattr(pred, 'gate_mode', 'off') == 'off':
+            return super().rollout(info, action_sequence, history_size)
         orc = orc.to(device=action_sequence.device, dtype=action_sequence.dtype).flatten(0, 1)  # (BS, F, D)
         assert orc.size(-1) == pred.int_oracle_dim, (orc.shape, pred.int_oracle_dim)
         had = 'forward' in pred.__dict__  # 다른 wrapper(E29 contact cost, E37 α 기록)가 이미 감싸고 있을 수 있다
@@ -319,6 +335,7 @@ class InteractionGatedPredictor(FactorizedPredictor):
         int_oracle_key: str = 'oracle_state',
         int_arch: str = 'transformer',
         int_input: str = 'state',
+        forecaster_cfg: dict | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -344,6 +361,12 @@ class InteractionGatedPredictor(FactorizedPredictor):
         self.int_oracle_dim = int_oracle_dim
         self.int_oracle_key = int_oracle_key
         self.oracle: torch.Tensor | None = None
+        # forecaster_cfg (E45): action 없이 다음 block latent를 예측하는 forecaster(iawm.forecaster). int_oracle_key가
+        # 'forecast'이면 그 예측을 정답 obstacle 입력 자리에 넣는다. 학습은 scripts/train_int_frozen.py가 따로 한다.
+        self.forecaster = None
+        if forecaster_cfg is not None:
+            from iawm.forecaster import Forecaster
+            self.forecaster = Forecaster(**dict(forecaster_cfg))
         # int_input='resolve' (E30): h_int와 gate 입력에 g의 예측(push 전 다음 z^c)과 h의 예측(다음 z^u)을
         # 더한다(detach). env가 "각자 움직인 뒤 겹치면 밀어낸다"로 동작하므로, 충돌 해소를 두 factor의
         # 독립 예측 위에서 하게 한다. 'state'는 기존 입력([z^c, z^u])이다.

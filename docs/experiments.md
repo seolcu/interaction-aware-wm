@@ -1773,3 +1773,49 @@ Q3 (첫 계획 800개씩): 실패 episode 수는 `sum_l2` 207(CF-JEPA) / 227(정
 **비용과 운영:** 첫 세션은 생성 직후 자동 반납 걸기에 kernel이 응답하지 않아 launch script가 바로 껐다(약 5분). launch script가 3번까지 다시 시도하도록 고친 뒤 다시 띄웠다(00:13~00:38). 합계 0.96 CU(261.14 → 260.18).
 
 **결과물:** `outputs/e43/res/`(git 제외)에 `e43_logs.tgz`(probe 학습 log 3개), `status_live.txt`.
+
+## 2026-11-18 · E45. Action 없이 미래를 예측하는 forecaster를 h_int 입력으로 (label 없음, base 고정)
+
+**목적:** E42에서 정답 obstacle 입력 모델은 위치 cost와 범위 제한 아래 CF-JEPA를 이겼다(+6.5%p). 남은 가장 큰 단서는 obstacle 입력이 simulator의 정답이라는 점이다. 같은 정보를 화면에서 손으로 재서 넣는 것(색으로 찾는 detector)은 정답을 사람이 다시 만드는 것이라 하지 않는다. 대신 모델이 스스로 배우게 한다.
+- E38, E39에서 h_int에 빠진 것은 "다음 block에 obstacle이 어디 있을까"다. z^c에는 obstacle 위치가 1.8px로 들어 있지만 속도는 1.7px/step으로 흐리다. latent만 받은 h_int는 contact z^c 오차를 5.5%만 줄였다(정답 입력은 74%).
+- Collision env의 obstacle은 action과 agent의 영향을 받지 않는다. 그래서 과거 latent만 보고 action 없이 다음 latent를 맞히도록 학습하면, 줄일 수 있는 오차는 obstacle의 움직임뿐이다(agent 성분은 평균으로 수렴한다). 정답 label 없이 고정된 encoder의 미래 frame latent를 target으로 쓴다.
+- 원래 CF-JEPA 설계에서 이 역할은 h(z^u를 action 없이 예측)가 맡는다. 그런데 Collision data에서는 obstacle 정보가 z^c로 들어가 h가 쓸모가 없었다(E38). forecaster는 z^c를 포함한 전체 latent에서 같은 일을 한다.
+
+**구현**
+- `src/iawm/forecaster.py` `Forecaster`: 과거 3 frame latent(전체 z, 192)와 마지막 두 frame의 차이 → 다음 block latent. 3층 MLP(hidden 1024), 잔차 형태이고 마지막 층을 0으로 초기화해 학습 전에는 마지막 frame을 그대로 낸다(persistence).
+- `InteractionGatedPredictor(forecaster_cfg=..., int_oracle_key='forecast')`: forecaster 예측을 정답 obstacle 입력 자리에 넣는다. gate 입력에는 넣지 않는다(E39와 같다).
+- `CFJEPA.rollout`: planning 때 history의 실제 latent에서 forecaster를 굴려 frame마다 feature를 만든다. action을 받지 않으므로 계획마다 한 번 계산해 CEM 후보 전체가 쓴다. history 밖 frame의 feature는 forecaster 자기 예측을 다시 넣은 값이다.
+- `scripts/train_int_frozen.py --oracle forecast`: forecaster를 먼저 학습한다. 실제 history에서 1~5 step 굴린 예측이 실제 미래 frame latent를 맞히게 하는 MSE이고, 차원별로 정규화한다. 그 뒤 forecaster를 고정하고 depth(실제 frame에서 몇 step 굴렸는가) 1~5별 feature를 미리 계산해, planning과 같은 분포로 h_int를 학습한다. planning에는 history 3 frame보다 앞의 frame이 없어서, history 첫 두 frame의 feature는 첫 frame을 반복해 만든다. 학습에도 같은 "앞 frame이 잘린" column을 따로 두어 planning과 같은 값을 쓴다. 검증과 test의 주 지표는 모든 위치에 실제 3 frame을 본 depth 1 값을 쓴 것이고, E39의 정답 입력 수치와 같은 조건이다. planning의 첫 예측과 같은 feature(`RESULT_TEST_PLAN0`)와 마지막 쪽 예측(depth 3~5, `RESULT_TEST_DEEP`)의 수치도 따로 남긴다. `--fc-steps 0`은 학습하지 않은 forecaster(= persistence)로 같은 크기의 대조군을 만든다.
+- `--oracle obs --oracle-parts pos|posvel`: 정답 obstacle 입력 중 현재 위치만, 또는 위치와 속도만 넣는 진단이다.
+- 진단(위치 label은 여기에만 쓴다): k = 1, 3, 5 block 뒤 obstacle 위치를 forecaster 예측 latent에서 꺼내는 MLP probe의 오차를, history 3 frame에서 꺼내는 probe와 persistence(지금 위치 그대로)와 비교한다.
+- `scripts/colab/check_forecast.py`(smoke test): planning rollout의 feature가 학습 column과 같은 정의인지(같은 frame, 같은 depth) 실제 data로 확인한다.
+- 로컬 CPU에서 합성 data(작은 encoder, 움직이는 obstacle)로 다섯 학습 설정, 진단, test, planning rollout이 모두 실행되는 것을 확인했다. 첫 확인에서 planning feature가 학습 column과 최대 9% 어긋났다(history 첫 두 frame의 앞 frame 처리 차이). 위의 잘린 column을 더한 뒤 차이는 float16 반올림 수준(2.4e-4)이다.
+
+**설정**
+- base: `e32_cf`(고정). data는 E39와 같은 seed로 다시 수집한다: `r1y`(학습 1만 episode, seed 4242), `r1yt`(test 1,500, seed 777), `collision_tworoom`(planning 시작 상태 2,000), `r1dbg`(smoke test 200).
+- h_int 크기는 모두 `e39_obsbig`와 같다(depth 4, hidden 256, mlp 1024), 30 epoch, resolve 입력.
+
+| 이름 | h_int 추가 입력 | 역할 |
+|---|---|---|
+| `e45_fc` | 학습한 forecaster의 예측 (192) | 제안 |
+| `e45_fc0` | 학습하지 않은 forecaster (= 마지막 frame 그대로, 192) | 대조군: 입력 크기와 parameter 수만 같고 미래 정보는 없다 |
+| `e45_obs` | 정답 [위치, 속도, 다음 위치] | 상한 (`e39_obsbig` 재현, 같은 세션 기준) |
+| `e45_obspv` | 정답 [위치, 속도] | 진단 |
+| `e45_obsp` | 정답 [위치] | 진단 |
+
+**판정 1: 예측 (실행 전에 정함. test `r1yt`, depth 1의 contact z^c 오차 감소율, 학습된 α)**
+- 통과: `e45_fc` ≥ 30%이고 `e45_fc` − `e45_fc0` ≥ 15%p. 통과하면 같은 세션에서 판정 2로 간다. 미달이면 결과를 저장하고 세션을 끈다.
+- 30%는 latent만(5.5%)과 정답 입력(74%) 사이에서, 정답 입력 이득의 약 40%를 학습으로 되찾는 수준이다.
+- 참고(판정에 쓰지 않음): `RESULT_TEST_PLAN0`, `RESULT_TEST_DEEP`, obstacle 위치 진단. 정답 성분 진단은 `e45_obsp` < `e45_obspv` < `e45_obs` 순으로 오르면 "부족한 것은 속도와 다음 위치"라는 E38의 해석을 확인한다.
+
+**판정 2: planning (실행 전에 정함)**
+- 조건: E42와 같다. r1x, P2 + `+action_clip=true` + `+cost=agent_px +pos_probe=pos_probe_e32_cf.pt`, `+plan_log`, L4 한 세션에서 seed를 짝짓는다.
+- 비교 4개: `e32_cf`(CF-JEPA), `e45_fc`(제안), `e45_fc0`(대조군), `e39_obsbig`(정답 입력, E42의 91.6 재현).
+- 1단계 seed 42~49. `e45_fc` − `e32_cf`가 +1%p 이상이면 2단계 seed 50~57.
+- 통과(seed 16개 paired): Q1 `e45_fc` − `e32_cf`가 +3%p 이상이고 표준오차의 2배 이상이고, Q2 `e45_fc` − `e45_fc0`가 0보다 크고 표준오차의 2배 이상이다.
+- 기준이 E42(+5%p, 3 SE)보다 낮은 이유: 정답 입력의 상한이 +6.5%p이므로, 학습한 입력으로 그 절반 이상이면 의미가 있다고 본다. 결과를 보기 전에 정했다.
+- 단서: 위치 cost는 위치 label로 학습한 probe를 쓴다. 두 모델이 같은 cost를 쓰므로 비교는 공정하지만, 단서는 그대로 남는다.
+
+**비용 상한:** L4 세션 1개, 기한 7시간, 12 CU(수집 약 75분, latent 계산 20분, 학습 5개 동시 약 70분, planning 4조건 × 16 seed 약 2.5시간).
+
+**다음:** 판정 2를 통과하면 obstacle 2개 조건(`r2b`, 정답 simulator 기준 interaction 이득 +28%p, E31)을 E46으로 따로 사전 등록한다. forecaster는 장면 전체의 미래를 예측하므로 obstacle 수에 따라 구조를 바꿀 필요가 없다.

@@ -401,6 +401,10 @@ def run(cfg: DictConfig):
         if plan_oracle:  # E39: 정답 obstacle 상태를 planning에 넣는다
             assert plan_history == pr.num_frames, "정답 obstacle 입력 모델은 +plan_history가 모델 history 길이와 같아야 한다"
             print(f"[plan oracle] obs_oracle dim {pr.int_oracle_dim} horizon {cfg.plan_config.horizon}", flush=True)
+        if (getattr(pr, "int_oracle_key", "") == "forecast" and getattr(pr, "forecaster", None) is not None
+                and getattr(pr, "gate_mode", "off") != "off"):  # E45: forecaster는 history frame이 모델 history 길이만큼 있어야 한다
+            assert plan_history == pr.num_frames, "forecast 입력 모델은 +plan_history가 모델 history 길이와 같아야 한다"
+            print(f"[plan forecast] forecaster dim {pr.forecaster.dim} history {pr.forecaster.history}", flush=True)
         if plan_history > 1 or obs_fix or plan_log:  # E26: 첫 관측을 실제 env 화면으로, planning에 과거 frame 넣기
             policy_cls = make_history_policy(
                 policy_cls, plan_history, cfg.plan_config.action_block, obs_fix,
