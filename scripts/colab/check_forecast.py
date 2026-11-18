@@ -31,7 +31,7 @@ def main():
 
     from analyze_gate import to_model_pixels
     from iawm.cfjepa import history_get_cost
-    from train_int_frozen import FC_TRUNC, FS, forecast_columns, load_rows
+    from train_int_frozen import FC_TRUNC, FS, anchor_columns, forecast_columns, load_rows
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     home = Path(swm.data.utils.get_cache_dir())
@@ -40,10 +40,12 @@ def main():
     assert pr.forecaster is not None and pr.int_oracle_key == 'forecast', 'forecast 입력 모델이 아니다'
     rows, off, ep_len = load_rows(m, home / 'datasets' / args.data, device, None, 'forecast')
     cols = forecast_columns(pr.forecaster, rows)
+    anc = anchor_columns(rows) if pr.forecaster.anchor else None  # E46: 마지막 실제 frame도 같은 index로 비교한다
+    D = pr.forecaster.dim
     H, S, n_steps = pr.num_frames, 4, 4
     T = H + n_steps
     A = m.action_encoder.input_dim
-    worst = 0.0
+    worst, worst_anc = 0.0, 0.0
     with h5py.File(home / 'datasets' / args.data, 'r') as f:
         eps = [e for e in range(len(ep_len)) if ep_len[e] > FS * (H + n_steps + 2)][:args.episodes]
         for e in eps:
@@ -66,7 +68,10 @@ def main():
                 else:          # depth i - H + 2: 실제 history 끝(r0)에서 굴린 값
                     d = i - H + 2
                     c, row = d - 1, r0 + FS * (d - 1)
-                worst = max(worst, (F[i].float() - cols[c, row].float()).abs().max().item())
+                worst = max(worst, (F[i, :D].float() - cols[c, row].float()).abs().max().item())
+                if anc is not None:
+                    assert F.shape[-1] == 2 * D, F.shape
+                    worst_anc = max(worst_anc, (F[i, D:].float() - anc[c, row].float()).abs().max().item())
             mode = pr.gate_mode
             pr.gate_mode = 'off'
             try:
@@ -77,8 +82,8 @@ def main():
                 pr.gate_mode = mode
             print(f'episode {e}: cost on {cost_on[0].tolist()} off {cost_off[0].tolist()}', flush=True)
     scale = cols.float().abs().max().item()
-    ok = worst < 1e-2 * max(1.0, scale)  # float16 column의 반올림 오차보다 크면 정의가 어긋난 것이다
-    print(f"FORECAST CHECK {'OK' if ok else 'BAD'}: max |plan - column| {worst:.2e} (column max abs {scale:.3f}), "
+    ok = worst < 1e-2 * max(1.0, scale) and worst_anc < 1e-2 * max(1.0, scale)  # float16 반올림 오차보다 크면 정의가 어긋난 것이다
+    print(f"FORECAST CHECK {'OK' if ok else 'BAD'}: max |plan - column| {worst:.2e} anchor {worst_anc:.2e} (column max abs {scale:.3f}), "
           f"features {tuple(info['forecast'].shape)}", flush=True)
     sys.exit(0 if ok else 1)
 

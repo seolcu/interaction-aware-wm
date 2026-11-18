@@ -27,9 +27,17 @@ from torch import nn
 
 
 class Forecaster(nn.Module):
-    def __init__(self, dim: int = 192, history: int = 3, hidden: int = 1024, depth: int = 3):
+    """anchor=True (E46): feature 뒤에 "그 frame까지 본 마지막 실제 frame"의 latent를 이어 붙인다(출력 2·dim).
+
+    E45에서 학습하지 않은 forecaster(= 마지막 실제 frame)를 넣은 대조군이 깊은 depth(3~5)에서 contact 오차를 22% 줄여
+    학습한 forecaster(11%)보다 나았다. 실제 frame은 굴린 예측과 달리 흐려지지 않으므로, 둘을 같이 주면 가까운 곳은
+    예측이, 먼 곳은 실제 frame과의 차이가 맡을 수 있다. anchor는 parameter가 없고, 학습하지 않은 forecaster의 출력과
+    정확히 같은 값이다(scripts/train_int_frozen.py anchor_columns).
+    """
+
+    def __init__(self, dim: int = 192, history: int = 3, hidden: int = 1024, depth: int = 3, anchor: bool = False):
         super().__init__()
-        self.dim, self.history = dim, history
+        self.dim, self.history, self.anchor = dim, history, anchor
         in_dim = dim * (history + 1)
         layers: list[nn.Module] = [nn.LayerNorm(in_dim), nn.Linear(in_dim, hidden), nn.GELU()]
         for _ in range(depth - 1):
@@ -63,10 +71,11 @@ class Forecaster(nn.Module):
 
     @torch.no_grad()
     def plan_features(self, hist: torch.Tensor, n_frames: int) -> torch.Tensor:
-        """planning용 feature. hist (B, H, dim) 실제 history latent. 반환 (B, n_frames, dim).
+        """planning용 feature. hist (B, H, dim) 실제 history latent. 반환 (B, n_frames, dim) (anchor면 2·dim).
 
         feature[i] = frame i까지(history 밖이면 forecaster가 굴린 frame) 보고 예측한 frame i+1.
         history보다 앞의 frame이 필요하면 첫 frame을 반복한다(학습 column과 같다).
+        anchor[i] = frame i까지 본 마지막 실제 frame = hist[min(i, H - 1)].
         """
         H = hist.size(1)
         track = list(hist.unbind(1))
@@ -74,7 +83,7 @@ class Forecaster(nn.Module):
         for i in range(n_frames):
             idx = [max(0, i - k) for k in range(self.history - 1, -1, -1)]
             f = self.step(torch.stack([track[j] for j in idx], dim=1))
-            feats.append(f)
+            feats.append(torch.cat([f, hist[:, min(i, H - 1)].to(f.dtype)], dim=-1) if self.anchor else f)
             if i + 1 >= H and i + 1 >= len(track):
                 track.append(f)
         return torch.stack(feats, dim=1)

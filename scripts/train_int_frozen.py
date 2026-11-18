@@ -21,6 +21,7 @@ E35와 다른 것:
   그대로 내는 persistence)로 같은 크기의 대조군을 만든다. forecaster의 예측은 depth 1~5(실제 frame에서 몇 step 굴렸는가)
   별로 미리 계산해 두고, 학습 때 planning과 같은 depth 분포로 고른다(아래 forward 참고). 검증과 test의 주 지표는 depth 1
   (정답 obstacle 입력의 수치와 같은 조건)이고, depth를 planning 마지막 쪽처럼 깊게 한 수치(RESULT_TEST_DEEP)도 남긴다.
+  --fc-anchor (E46): forecaster 예측 뒤에 "마지막 실제 frame" latent(anchor_columns)를 이어 붙여 입력을 2배로 한다.
 - 검증: data의 마지막 --val-episodes episode는 학습에 쓰지 않고, epoch마다 contact / non-contact z^c 오차를 잰다.
   검증 오차(학습된 α로 더한 예측)가 가장 낮은 epoch를 weights_best.pt로 남긴다.
 - --test-data: 따로 수집한 data에서 최종 수치를 잰다(RESULT_TEST 줄. pipeline이 읽는다).
@@ -71,8 +72,9 @@ def gate_config(base_cfg: dict, args) -> dict:
         p.update(int_oracle_dim=OBS_PARTS[args.oracle_parts] * args.num_obstacles, int_oracle_key='obs_oracle')
     if args.oracle == 'forecast':
         d = p['dim_c'] + p['dim_u']
-        p.update(int_oracle_dim=d, int_oracle_key='forecast',
-                 forecaster_cfg={'dim': d, 'history': HIST, 'hidden': args.fc_hidden, 'depth': args.fc_depth})
+        p.update(int_oracle_dim=d * (2 if args.fc_anchor else 1), int_oracle_key='forecast',
+                 forecaster_cfg={'dim': d, 'history': HIST, 'hidden': args.fc_hidden, 'depth': args.fc_depth,
+                                 'anchor': bool(args.fc_anchor)})
     cfg.update(int_aux_weight=args.int_aux_weight, gate_bce_weight=1.0, int_lr=args.lr)
     return cfg
 
@@ -200,6 +202,26 @@ def forecast_columns(fc, rows, batch=32768):
 
 
 @torch.no_grad()
+def anchor_columns(rows):
+    """forecast_columns와 같은 index의 "마지막 실제 frame" latent (E46). 반환 (FC_DEPTH + 2, N, D) float16.
+
+    depth d column은 frame r-FS·(d-1)(episode 시작에서 잘린 실제 depth 기준), 잘린 column 두 개와 depth 1은 frame r이다.
+    학습하지 않은 forecaster(persistence)의 forecast_columns와 정확히 같은 값이다(E45 대조군 fc0의 입력).
+    """
+    z, row_off = rows['z'], rows['row_off']
+    n = z.shape[0]
+    r = torch.arange(n, device=z.device)
+    back = (r - row_off) // FS
+    out = torch.empty(FC_DEPTH + 2, n, z.shape[1], dtype=torch.float16, device=z.device)
+    for depth in range(1, FC_DEPTH + 1):
+        de = torch.clamp(back + 1, max=depth)
+        out[depth - 1] = z[r - FS * (de - 1)].half()
+    out[FC_TRUNC[0]] = z.half()
+    out[FC_TRUNC[1]] = z.half()
+    return out
+
+
+@torch.no_grad()
 def forecaster_px(fc, rows, off, ep_len, tr_eps, te_eps, device, d_c, ks=(1, 3, 5), n_fit=150000, steps=4000):
     """진단: 미래 obstacle 위치(px)를 얼마나 꺼낼 수 있는가. 위치 label은 이 진단에만 쓴다(모델 학습에는 쓰지 않는다).
 
@@ -281,6 +303,8 @@ def forward(model, rows, s, call=None):
             i = t + torch.arange(HIST, device=s.device)[None]                           # planning frame (B, 3)
             col = torch.where(i == 0, FC_TRUNC[0], torch.where(i == 1, FC_TRUNC[1], torch.clamp(i - 1, 1, FC_DEPTH) - 1))
         pr.oracle = rows['fc'][col, fr[:, :HIST]].float()
+        if 'anc' in rows:  # E46: 마지막 실제 frame을 이어 붙인다 (같은 column index)
+            pr.oracle = torch.cat([pr.oracle, rows['anc'][col, fr[:, :HIST]].float()], dim=-1)
     pred = model.predict(emb[:, :HIST], act_emb[:, :HIST])
     return {'pred': pred, 'tgt': emb[:, 1:HIST + 1], 'base': pr.last_pred_c_base, 'delta': pr.last_delta,
             'logit': pr.last_logit.squeeze(-1), 'alpha': pr.last_alpha.squeeze(-1), 'lab': rows['cn'][fr[:, :HIST]] > 0.5}
@@ -334,6 +358,7 @@ def main():
     ap.add_argument('--fc-steps', type=int, default=20000, help='forecaster 학습 step (0 = 학습하지 않은 대조군)')
     ap.add_argument('--fc-hidden', type=int, default=1024)
     ap.add_argument('--fc-depth', type=int, default=3)
+    ap.add_argument('--fc-anchor', action='store_true', help='E46: forecaster 예측과 마지막 실제 frame을 함께 넣는다')
     ap.add_argument('--num-obstacles', type=int, default=1)
     ap.add_argument('--int-input', default='resolve', choices=['state', 'resolve'])
     ap.add_argument('--int-depth', type=int, default=2)
@@ -375,7 +400,7 @@ def main():
     model = model.to(device).eval()
     pr, d_c = model.predictor, model.dim_c
     print(f'base={args.base} loaded {len(sd)} tensors, new={len(missing)}, trainable={n_train / 1e6:.3f}M '
-          f'oracle={args.oracle} parts={args.oracle_parts} int_input={args.int_input} depth={args.int_depth} '
+          f'oracle={args.oracle} parts={args.oracle_parts} anchor={args.fc_anchor} int_input={args.int_input} depth={args.int_depth} '
           f'hidden={args.int_hidden_dim}', flush=True)
 
     cache_dir = Path(args.cache_dir) if args.cache_dir else home / 'latent_cache'
@@ -389,6 +414,8 @@ def main():
                             args.oracle, args.oracle_parts, args.num_obstacles)
         if fc is not None and fc_ready[0]:  # forecaster를 고정한 뒤 읽는 test data
             r['fc'] = forecast_columns(fc, r)
+            if fc.anchor:
+                r['anc'] = anchor_columns(r)
         return r, o, l
 
     rows, off, ep_len = rows_of(args.data)
@@ -407,6 +434,8 @@ def main():
         fc.eval().requires_grad_(False)
         fc_px = forecaster_px(fc, rows, off, ep_len, range(0, n_ep - n_val), range(n_ep - n_val, n_ep), device, d_c)
         rows['fc'] = forecast_columns(fc, rows)
+        if fc.anchor:
+            rows['anc'] = anchor_columns(rows)
         fc_ready[0] = True
         print(f"forecast columns {tuple(rows['fc'].shape)} ({rows['fc'].numel() * 2 / 1e9:.2f} GB)", flush=True)
 

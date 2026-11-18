@@ -1868,3 +1868,39 @@ Q3 (첫 계획 800개씩): 실패 episode 수는 `sum_l2` 207(CF-JEPA) / 227(정
 - 고친 것(`outputs/e45`, 다음 실험의 template): `save.sh`는 묶기를 Colab 안에서 nohup으로 띄우고 끝 표시를 짧은 호출로 확인한다(gzip 제외). `watch.sh`는 저장에 실패하면 세션을 끄지 않고 5분 뒤 다시 시도하며, 3번 실패하면 colab-guard에 맡긴다.
 
 **결과물:** `outputs/e45/res/`(git 제외)에 `status_live.txt`.
+
+## 2026-11-18 · E46. forecaster 예측과 마지막 실제 frame을 함께 h_int 입력으로 (label 없음, base 고정)
+
+**목적:** E45에서 forecaster는 한 block 앞 contact z^c 오차를 34% 줄였지만 planning 성공률은 CF-JEPA와 같았다. planning은 history 끝에서 최대 5 block을 굴린 feature를 쓰는데, 그 구간(depth 3~5)에서 forecaster의 이득은 11%로 떨어졌다. 반면 학습하지 않은 forecaster(대조군 `e45_fc0`, 실제로는 "마지막 실제 frame"을 넣은 것)는 같은 구간에서 22%였다. 깊은 위치에서 마지막 실제 frame은 과거가 되므로, h_int가 그것과 굴린 z^c를 비교해 obstacle이 움직인 양(속도)을 읽을 수 있다고 추정한다. 굴린 forecaster 예측에는 이 단서가 없다. 두 입력을 함께 주면 가까운 곳은 예측이, 먼 곳은 실제 frame이 맡는지 잰다. 이 실험의 번호는 E46이고, E45에서 예고한 obstacle 2개 조건은 하게 되면 새 번호를 붙인다.
+
+**구현**
+- `Forecaster(anchor=True)`: `plan_features`가 frame i의 feature 뒤에 "frame i까지 본 마지막 실제 frame" `hist[min(i, H − 1)]`을 이어 붙인다(출력 384). anchor에는 parameter가 없다.
+- `scripts/train_int_frozen.py --fc-anchor`: h_int 추가 입력을 2배로 하고, `anchor_columns`로 forecast column과 같은 index의 실제 frame latent를 만든다. 이 값은 학습하지 않은 forecaster의 column과 정확히 같다(로컬 확인, 차이 0).
+- `scripts/colab/check_forecast.py`: anchor 부분도 planning 값과 학습 column을 비교한다.
+- 로컬 CPU 합성 data에서 학습, test, planning rollout이 끝까지 돌고, planning feature와 column의 차이가 forecast 2.4e-4, anchor 2.3e-4(float16 반올림 수준)인 것을 확인했다. anchor가 없는 E45 모델도 같은 check를 통과한다.
+
+**설정**
+- base `e32_cf`(고정). data는 E45와 같은 seed로 다시 수집한다(`r1y` 1만 episode seed 4242, `r1yt` 1,500 seed 777, `collision_tworoom` 2,000, `r1dbg` 200). E45 세션의 data와 weights는 남아 있지 않다.
+- h_int 크기와 학습은 E45와 같다(depth 4, hidden 256, mlp 1024, 30 epoch, resolve 입력). forecaster도 같다(20,000 step).
+
+| 이름 | h_int 추가 입력 | 역할 |
+|---|---|---|
+| `e46_fca` | forecaster 예측 + 마지막 실제 frame (384) | 제안 |
+| `e46_fc` | forecaster 예측 (192) | `e45_fc` 재현 |
+| `e46_fc0` | 마지막 실제 frame (192, = 학습하지 않은 forecaster) | `e45_fc0` 재현, 대조군 |
+
+**판정 1: 예측 (실행 전에 정함. test `r1yt`, contact z^c 오차 감소율, 학습된 α)**
+- 주 지표는 planning 마지막 쪽 feature(t = 4, depth 3~5, `RESULT_TEST_DEEP`)다.
+- 통과: `e46_fca`의 DEEP이 `e46_fc`와 `e46_fc0`의 DEEP 중 큰 값보다 5%p 이상 높고, `e46_fca`의 depth 1(`RESULT_TEST`)이 30% 이상이다(E45 수준 유지).
+- 미달이면 planning 평가를 하지 않고 결과를 저장한 뒤 세션을 끈다.
+
+**판정 2: planning (실행 전에 정함. E45와 같은 설정과 기준)**
+- 조건: r1x, P2 + `+action_clip=true` + `+cost=agent_px +pos_probe=pos_probe_e32_cf.pt`, `+plan_log`, L4 한 세션에서 seed를 짝짓는다.
+- 비교 4개: `e32_cf`(CF-JEPA), `e46_fca`(제안), `e46_fc0`(대조군), `e39_obsbig`(정답 입력, 참고).
+- 1단계 seed 42~49. `e46_fca` − `e32_cf`가 +1%p 이상이면 2단계 seed 50~57.
+- 통과(seed 16개 paired): Q1 `e46_fca` − `e32_cf`가 +3%p 이상이고 표준오차의 2배 이상, Q2 `e46_fca` − `e46_fc0`가 0보다 크고 표준오차의 2배 이상.
+- 단서: E45 세션에서 정답 입력 모델의 이득도 +3.3 ± 1.7%p였다. Q1을 통과하려면 정답 입력에 가까운 수준이 필요하므로, 판정 1을 통과해도 판정 2의 통과 가능성은 높지 않다고 본다.
+
+**운영:** E45의 저장 실패(묶기가 `colab exec` 4분 제한에 걸림, 실패 뒤에도 세션을 끔)를 고친 `save.sh`, `watch.sh`를 쓴다. 학습이 끝나면(TRAIN DONE) planning 전에 한 번 저장해 학습 log와 weights를 먼저 받는다.
+
+**비용 상한:** L4 세션 1개, 기한 7시간, 12 CU(수집 약 75분, latent 계산 15분, 학습 3개 동시 약 80분, planning 4조건 × 16 seed 약 2시간).
