@@ -18,6 +18,10 @@ import numpy as np
 import torch
 
 
+def F_dim(pr, D, anc, n_tag):
+    return D * (2 if anc is not None else 1) + n_tag
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--ckpt', required=True)
@@ -31,6 +35,7 @@ def main():
 
     from analyze_gate import to_model_pixels
     from iawm.cfjepa import history_get_cost
+    from iawm.forecaster import N_TAGS
     from train_int_frozen import FC_TRUNC, FS, anchor_columns, forecast_columns, load_rows
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -45,7 +50,9 @@ def main():
     H, S, n_steps = pr.num_frames, 4, 4
     T = H + n_steps
     A = m.action_encoder.input_dim
-    worst, worst_anc = 0.0, 0.0
+    worst, worst_anc, tag_bad = 0.0, 0.0, 0
+    n_tag = N_TAGS if pr.forecaster.depth_tag else 0
+    assert F_dim(pr, D, anc, n_tag) == pr.int_oracle_dim, (pr.int_oracle_dim, D, n_tag)
     with h5py.File(home / 'datasets' / args.data, 'r') as f:
         eps = [e for e in range(len(ep_len)) if ep_len[e] > FS * (H + n_steps + 2)][:args.episodes]
         for e in eps:
@@ -70,8 +77,11 @@ def main():
                     c, row = d - 1, r0 + FS * (d - 1)
                 worst = max(worst, (F[i, :D].float() - cols[c, row].float()).abs().max().item())
                 if anc is not None:
-                    assert F.shape[-1] == 2 * D, F.shape
-                    worst_anc = max(worst_anc, (F[i, D:].float() - anc[c, row].float()).abs().max().item())
+                    assert F.shape[-1] == 2 * D + n_tag, F.shape
+                    worst_anc = max(worst_anc, (F[i, D:2 * D].float() - anc[c, row].float()).abs().max().item())
+                if n_tag:  # E47: planning의 depth one-hot이 학습 column index c와 같아야 한다
+                    tag = F[i, -n_tag:].float()
+                    tag_bad += int(tag.argmax().item() != c or tag.sum().item() != 1)
             mode = pr.gate_mode
             pr.gate_mode = 'off'
             try:
@@ -82,8 +92,8 @@ def main():
                 pr.gate_mode = mode
             print(f'episode {e}: cost on {cost_on[0].tolist()} off {cost_off[0].tolist()}', flush=True)
     scale = cols.float().abs().max().item()
-    ok = worst < 1e-2 * max(1.0, scale) and worst_anc < 1e-2 * max(1.0, scale)  # float16 반올림 오차보다 크면 정의가 어긋난 것이다
-    print(f"FORECAST CHECK {'OK' if ok else 'BAD'}: max |plan - column| {worst:.2e} anchor {worst_anc:.2e} (column max abs {scale:.3f}), "
+    ok = worst < 1e-2 * max(1.0, scale) and worst_anc < 1e-2 * max(1.0, scale) and tag_bad == 0  # float16 반올림 오차보다 크면 정의가 어긋난 것이다
+    print(f"FORECAST CHECK {'OK' if ok else 'BAD'}: max |plan - column| {worst:.2e} anchor {worst_anc:.2e} tag mismatches {tag_bad} (column max abs {scale:.3f}), "
           f"features {tuple(info['forecast'].shape)}", flush=True)
     sys.exit(0 if ok else 1)
 

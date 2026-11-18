@@ -26,8 +26,28 @@ import torch
 from torch import nn
 
 
+TAG_DEPTH = 5  # depth_tag의 최대 depth (scripts/train_int_frozen.py FC_DEPTH와 같다)
+N_TAGS = TAG_DEPTH + 2  # depth 1..5 + 앞 frame이 잘린 depth 1 두 종류 (train_int_frozen의 column index와 같다)
+
+
+def tag_index(i: int, history: int) -> int:
+    """planning frame i의 feature가 학습 column 중 어느 것에 해당하는가 (train_int_frozen.forward의 col과 같은 정의).
+
+    i < history - 1: 앞 frame이 잘린 depth 1 (TAG_DEPTH + i). 그 뒤: depth min(i - history + 2, TAG_DEPTH)의 index (depth - 1).
+    """
+    if i < history - 1:
+        return TAG_DEPTH + i
+    return min(i - history + 2, TAG_DEPTH) - 1
+
+
 class Forecaster(nn.Module):
-    """anchor=True (E46): feature 뒤에 "그 frame까지 본 마지막 실제 frame"의 latent를 이어 붙인다(출력 2·dim).
+    """depth_tag=True (E47): feature 맨 뒤에 "이 feature가 몇 step 굴린 예측인가"의 one-hot(N_TAGS)을 붙인다.
+
+    E46에서 h_int는 forecaster 예측이 정확한 가까운 위치(depth 1)에 맞춰지고, 깊은 위치(depth 3~5)에서는 이득이 11%로
+    떨어졌다(실제 frame만 넣은 대조군 22%). h_int 하나가 모든 depth를 구분 없이 맞추기 때문이라고 추정한다. depth를
+    알려 주면 h_int가 depth마다 입력을 다르게 쓸 수 있다. parameter는 없다.
+
+    anchor=True (E46): feature 뒤에 "그 frame까지 본 마지막 실제 frame"의 latent를 이어 붙인다(출력 2·dim).
 
     E45에서 학습하지 않은 forecaster(= 마지막 실제 frame)를 넣은 대조군이 깊은 depth(3~5)에서 contact 오차를 22% 줄여
     학습한 forecaster(11%)보다 나았다. 실제 frame은 굴린 예측과 달리 흐려지지 않으므로, 둘을 같이 주면 가까운 곳은
@@ -35,9 +55,10 @@ class Forecaster(nn.Module):
     정확히 같은 값이다(scripts/train_int_frozen.py anchor_columns).
     """
 
-    def __init__(self, dim: int = 192, history: int = 3, hidden: int = 1024, depth: int = 3, anchor: bool = False):
+    def __init__(self, dim: int = 192, history: int = 3, hidden: int = 1024, depth: int = 3, anchor: bool = False,
+                 depth_tag: bool = False):
         super().__init__()
-        self.dim, self.history, self.anchor = dim, history, anchor
+        self.dim, self.history, self.anchor, self.depth_tag = dim, history, anchor, depth_tag
         in_dim = dim * (history + 1)
         layers: list[nn.Module] = [nn.LayerNorm(in_dim), nn.Linear(in_dim, hidden), nn.GELU()]
         for _ in range(depth - 1):
@@ -71,19 +92,26 @@ class Forecaster(nn.Module):
 
     @torch.no_grad()
     def plan_features(self, hist: torch.Tensor, n_frames: int) -> torch.Tensor:
-        """planning용 feature. hist (B, H, dim) 실제 history latent. 반환 (B, n_frames, dim) (anchor면 2·dim).
+        """planning용 feature. hist (B, H, dim) 실제 history latent. 반환 (B, n_frames, dim) (anchor면 2·dim, depth_tag면 + N_TAGS).
 
         feature[i] = frame i까지(history 밖이면 forecaster가 굴린 frame) 보고 예측한 frame i+1.
         history보다 앞의 frame이 필요하면 첫 frame을 반복한다(학습 column과 같다).
         anchor[i] = frame i까지 본 마지막 실제 frame = hist[min(i, H - 1)].
+        tag[i] = one-hot(tag_index(i, H)) (depth_tag일 때, 학습 column의 index와 같다).
         """
         H = hist.size(1)
+        assert not self.depth_tag or H == self.history, (H, self.history)
         track = list(hist.unbind(1))
         feats = []
         for i in range(n_frames):
             idx = [max(0, i - k) for k in range(self.history - 1, -1, -1)]
             f = self.step(torch.stack([track[j] for j in idx], dim=1))
-            feats.append(torch.cat([f, hist[:, min(i, H - 1)].to(f.dtype)], dim=-1) if self.anchor else f)
+            parts = [f] + ([hist[:, min(i, H - 1)].to(f.dtype)] if self.anchor else [])
+            if self.depth_tag:
+                tag = f.new_zeros(f.size(0), N_TAGS)
+                tag[:, tag_index(i, H)] = 1
+                parts.append(tag)
+            feats.append(torch.cat(parts, dim=-1))
             if i + 1 >= H and i + 1 >= len(track):
                 track.append(f)
         return torch.stack(feats, dim=1)

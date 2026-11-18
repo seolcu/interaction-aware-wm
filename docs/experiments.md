@@ -1948,3 +1948,55 @@ Q3 (첫 계획 800개씩): 실패 episode 수는 `sum_l2` 207(CF-JEPA) / 227(정
 - 결과는 `TRAIN DONE`과 `ALL DONE`에서 받았고(각 148MB, 대부분 smoke와 학습 모델의 `int_only_best.pt`), 감시 script가 세션을 끄고 꺼진 것을 확인했다.
 
 **결과물:** Proton Drive `results/E46_forecast_anchor/`에 `e46_logs.tgz`(log, status, `e46_fca`/`e46_fc`/`e46_fc0`의 `config.json`, `metrics.json`, `int_only_best.pt`)와 `pipeline/`이 있다.
+
+## 2026-11-19 · E47. obstacle 2개 조건에서 정답 입력, forecaster, depth 표시 forecaster (base fine-tune 후 고정)
+
+**목적:** E39~E46의 r1x(obstacle 1개)에서는 정답 obstacle 입력 모델도 CF-JEPA보다 planning 성공률이 +3~6%p 높을 뿐이었다(E42 +6.5, E45 +3.3). E38에서 CF-JEPA의 z^c가 obstacle 1개의 위치를 이미 정밀하게 담았기 때문에, interaction module이 더할 여지가 작았다고 본다. obstacle이 늘면 이 여지가 커질 것으로 예상한다.
+- 정답 simulator 기준으로 `r2b`(obstacle 2개, 반지름 22)의 interaction 이득은 +28%p다(E31, r1x와 같다).
+- obstacle 1개로 학습한 모델은 obstacle 2개에서 성공률이 91에서 78로 떨어졌다(E17).
+- 발표 피드백의 "obstacle이 많아질 때 모델링할 수 있는가"에 직접 답하는 실험이다.
+
+함께 E46의 미검증 가설("h_int 하나가 모든 depth를 구분 없이 맞추다 보니 가까운 위치에 맞춰진다")을 시험한다. forecaster feature에 "몇 step 굴린 예측인가"를 one-hot으로 붙여(`e47_fcd`), h_int가 depth마다 입력을 다르게 쓸 수 있게 한다.
+
+**구현**
+- `Forecaster(depth_tag=True)`: `plan_features`가 frame i의 feature 맨 뒤에 `tag_index(i, H)`의 one-hot(7 = depth 1~5, 앞 frame이 잘린 depth 1 두 종류)을 붙인다. 이 index는 `train_int_frozen.forward`가 고르는 학습 column index와 같은 정의다. parameter는 없다.
+- `scripts/train_int_frozen.py --fc-depth-tag`: 학습 때 같은 column index의 one-hot을 붙인다. 검증 data에서 깊은 구간 수치(`RESULT_VAL_DEEP`)를 새로 남긴다. planning에 쓸 제안 모델을 test 수치를 보지 않고 고르는 데 쓴다.
+- `scripts/colab/check_forecast.py`: planning feature의 one-hot이 학습 column index와 같은지도 확인한다.
+- 로컬 확인: `tag_index`와 학습 column 식이 frame 0~7에서 같고, depth 표시를 붙여도 앞부분 feature는 그대로임을 단위 테스트로 확인했다.
+
+**설정**
+- data(모두 obstacle 2개, 반지름 22): `r2b`(base fine-tune용 1만 episode, seed 5151), `r2y`(h_int 학습용 1만 episode, seed 4242, base가 보지 않은 data), `r2yt`(test 1,500, seed 777), `collision_tworoom`(planning 시작 상태 2,000, E35~E46과 같다), `r2dbg`(smoke test 200, seed 11).
+- base `e47_cf`: `e32_cf`(r1x로 10 epoch)에서 시작해 `r2b`로 3 epoch fine-tune한다(`train.py +init_from`, lr 5e-5, 기본 설정). 처음부터 학습하는 것보다 약 3배 싸다. CF-JEPA 대조군이자 아래 모든 h_int의 고정 base다. 모든 모델이 같은 base를 쓰므로 비교는 공정하다.
+- 위치 probe `pos_probe_e47_cf.pt`: `e47_cf`의 z^c에서 `r2b`로 학습한다(cost용, E40과 같은 방식).
+- h_int 크기와 학습은 E45·E46과 같다(depth 4, hidden 256, mlp 1024, 30 epoch, resolve 입력, forecaster 20,000 step).
+
+| 이름 | h_int 추가 입력 | 역할 |
+|---|---|---|
+| `e47_obs` | 정답 obstacle [위치, 속도, 다음 위치] × 2개 (12) | 상한 |
+| `e47_fc` | forecaster 예측 (192) | 제안 (E45 방식) |
+| `e47_fcd` | forecaster 예측 + depth one-hot (199) | 제안 (E46 가설 검증) |
+| `e47_fc0` | 마지막 실제 frame (192, 학습하지 않은 forecaster) | 대조군 |
+
+**제안 모델 고르기 (실행 전에 정함):** `e47_fcd`와 `e47_fc` 중 검증 data의 깊은 구간 contact z^c 오차 감소율(`RESULT_VAL_DEEP`)이 높은 쪽을 planning의 제안 모델(`prop`)로 쓴다. test 수치는 보지 않는다.
+
+**판정 (실행 전에 정함)**
+- 예측(참고, 진행을 막지 않는다): test `r2yt`의 contact z^c 오차 감소율. E46 가설은 `e47_fcd`의 DEEP이 `e47_fc`보다 5%p 이상 높으면 지지된다고 본다.
+- planning 조건: `world.num_obstacles=2 +world.obstacle_radius=22.0`, P2 + `+action_clip=true` + `+cost=agent_px +pos_probe=pos_probe_e47_cf.pt`, `+plan_log`. L4 한 세션에서 seed 42~57(16개)을 짝짓는다. 이번에는 1단계에서 멈추지 않고 16개를 모두 잰다. Q0이 제안 모델의 결과와 상관없이 의미가 있기 때문이다.
+- 비교 4개: `e47_cf`(CF-JEPA), `prop`(제안), `e47_fc0`(대조군), `e47_obs`(정답 입력).
+- 통과 기준(paired, 16 seed):
+  - **Q0** `e47_obs` − `e47_cf`가 +3%p 이상이고 표준오차의 2배 이상. "obstacle이 많으면 interaction 정보의 planning 이득이 커지는가"에 답한다. r1x에서는 +3.3 ± 1.7(E45)이었다.
+  - **Q1** `prop` − `e47_cf`가 +3%p 이상이고 표준오차의 2배 이상.
+  - **Q2** `prop` − `e47_fc0`가 0보다 크고 표준오차의 2배 이상.
+- 해석 계획
+  - Q0 미달: obstacle 2개에서도 정답 정보의 planning 이득이 작다. 이 planner와 cost에서는 interaction 정보가 성공률을 크게 바꾸지 않는다는 결론이 된다. 한계로 정리하고, 원인 진단(plan log)으로 간다.
+  - Q0 통과, Q1 미달: 이득은 있지만 학습한 입력이 못 따라간다. forecaster와 h_int 개선을 이 조건에서 계속한다.
+  - Q1, Q2 통과: label 없는 제안 방법이 CF-JEPA를 이긴 첫 결과다. obstacle 3개 또는 seed를 늘려 확인한다.
+
+**운영:** E46 pipeline(`outputs/e46/`)을 고쳐 `outputs/e47/`에 둔다(git 제외). 바뀐 점은 다음과 같다.
+- smoke test에 fine-tune(20 batch), 위치 probe, obstacle 2개 정답 입력(`obs_oracle (3, 7, 12)`), depth 표시 forecaster(`features (.*, 7, 199)`)를 더했다.
+- fine-tune이 끝나면(`BASE DONE`) 한 번 저장한다. base를 `base_final.pt`로 복사해 두는데, 저장 묶음이 `weights_*.pt`를 빼기 때문이다. 이 base는 다음 실험에서 다시 쓴다.
+- 실행: `systemd-run --user --unit=e47-run --collect --setenv=HOURS=11 bash "$PWD/outputs/e47/launch.sh"`
+
+**비용 상한:** L4 세션 1개, 기한 11시간, 20 CU. 예상 시간은 수집 약 90분, fine-tune 약 3.5시간, probe와 latent 계산 약 30분, 학습 4개 동시 약 90분, planning 4조건 × 16 seed 약 2.5시간이다. 11/19에는 E46에서 약 5 CU를 썼으므로 하루 한도(20)를 넘는다. colab-guard는 한도를 넘어도 돌고 있는 세션은 끄지 않고, 그날 새 세션만 막는다.
+
+**실행 상태:** 사전 등록(11/19). 결과는 이 절 끝에 적는다.

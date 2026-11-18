@@ -22,6 +22,8 @@ E35와 다른 것:
   별로 미리 계산해 두고, 학습 때 planning과 같은 depth 분포로 고른다(아래 forward 참고). 검증과 test의 주 지표는 depth 1
   (정답 obstacle 입력의 수치와 같은 조건)이고, depth를 planning 마지막 쪽처럼 깊게 한 수치(RESULT_TEST_DEEP)도 남긴다.
   --fc-anchor (E46): forecaster 예측 뒤에 "마지막 실제 frame" latent(anchor_columns)를 이어 붙여 입력을 2배로 한다.
+  --fc-depth-tag (E47): 맨 뒤에 그 feature의 column(depth) one-hot(iawm.forecaster.N_TAGS)을 붙인다. planning에서는
+  Forecaster.plan_features가 같은 index(tag_index)를 붙인다.
 - 검증: data의 마지막 --val-episodes episode는 학습에 쓰지 않고, epoch마다 contact / non-contact z^c 오차를 잰다.
   검증 오차(학습된 α로 더한 예측)가 가장 낮은 epoch를 weights_best.pt로 남긴다.
 - --test-data: 따로 수집한 data에서 최종 수치를 잰다(RESULT_TEST 줄. pipeline이 읽는다).
@@ -49,12 +51,14 @@ import torch
 
 from add_contact_labels import contact_next_labels
 from analyze_gate import action_stats, episode_offsets, to_model_pixels
+from iawm.forecaster import N_TAGS, TAG_DEPTH
 
 INT_RE = re.compile(r'^predictor\.(h_int|int_in|int_out|gate)(\.|$)')      # h_int 단계에서 학습하는 부분
 NEW_RE = re.compile(r'^predictor\.(h_int|int_in|int_out|gate|forecaster)(\.|$)')  # base에 없는 부분 (int_only에 남긴다)
 FS, NUM_STEPS, HIST = 5, 4, 3  # frameskip, clip 길이(history + 1), history. 학습 config와 같다
 FC_DEPTH = 5  # forecaster feature를 미리 계산해 두는 최대 depth (planning horizon 5 block)
 FC_TRUNC = (FC_DEPTH, FC_DEPTH + 1)  # 앞 frame이 잘린 depth 1 column: 실제 frame 1개만 / 2개만 본 것 (아래 forecast_columns)
+assert N_TAGS == FC_DEPTH + 2 and TAG_DEPTH == FC_DEPTH, 'iawm.forecaster의 tag 정의가 column index와 같아야 한다'
 OBS_PARTS = {'pos': 2, 'posvel': 4, 'full': 6}  # obs_oracle 한 obstacle의 앞쪽 몇 차원을 쓰는가 [pos, vel, pos_next]
 
 
@@ -72,9 +76,10 @@ def gate_config(base_cfg: dict, args) -> dict:
         p.update(int_oracle_dim=OBS_PARTS[args.oracle_parts] * args.num_obstacles, int_oracle_key='obs_oracle')
     if args.oracle == 'forecast':
         d = p['dim_c'] + p['dim_u']
-        p.update(int_oracle_dim=d * (2 if args.fc_anchor else 1), int_oracle_key='forecast',
+        p.update(int_oracle_dim=d * (2 if args.fc_anchor else 1) + (N_TAGS if args.fc_depth_tag else 0),
+                 int_oracle_key='forecast',
                  forecaster_cfg={'dim': d, 'history': HIST, 'hidden': args.fc_hidden, 'depth': args.fc_depth,
-                                 'anchor': bool(args.fc_anchor)})
+                                 'anchor': bool(args.fc_anchor), 'depth_tag': bool(args.fc_depth_tag)})
     cfg.update(int_aux_weight=args.int_aux_weight, gate_bce_weight=1.0, int_lr=args.lr)
     return cfg
 
@@ -305,6 +310,8 @@ def forward(model, rows, s, call=None):
         pr.oracle = rows['fc'][col, fr[:, :HIST]].float()
         if 'anc' in rows:  # E46: 마지막 실제 frame을 이어 붙인다 (같은 column index)
             pr.oracle = torch.cat([pr.oracle, rows['anc'][col, fr[:, :HIST]].float()], dim=-1)
+        if pr.forecaster is not None and pr.forecaster.depth_tag:  # E47: column index one-hot
+            pr.oracle = torch.cat([pr.oracle, torch.nn.functional.one_hot(col, N_TAGS).float()], dim=-1)
     pred = model.predict(emb[:, :HIST], act_emb[:, :HIST])
     return {'pred': pred, 'tgt': emb[:, 1:HIST + 1], 'base': pr.last_pred_c_base, 'delta': pr.last_delta,
             'logit': pr.last_logit.squeeze(-1), 'alpha': pr.last_alpha.squeeze(-1), 'lab': rows['cn'][fr[:, :HIST]] > 0.5}
@@ -359,6 +366,7 @@ def main():
     ap.add_argument('--fc-hidden', type=int, default=1024)
     ap.add_argument('--fc-depth', type=int, default=3)
     ap.add_argument('--fc-anchor', action='store_true', help='E46: forecaster 예측과 마지막 실제 frame을 함께 넣는다')
+    ap.add_argument('--fc-depth-tag', action='store_true', help='E47: forecaster feature에 depth one-hot을 붙인다')
     ap.add_argument('--num-obstacles', type=int, default=1)
     ap.add_argument('--int-input', default='resolve', choices=['state', 'resolve'])
     ap.add_argument('--int-depth', type=int, default=2)
@@ -400,7 +408,7 @@ def main():
     model = model.to(device).eval()
     pr, d_c = model.predictor, model.dim_c
     print(f'base={args.base} loaded {len(sd)} tensors, new={len(missing)}, trainable={n_train / 1e6:.3f}M '
-          f'oracle={args.oracle} parts={args.oracle_parts} anchor={args.fc_anchor} int_input={args.int_input} depth={args.int_depth} '
+          f'oracle={args.oracle} parts={args.oracle_parts} anchor={args.fc_anchor} depth_tag={args.fc_depth_tag} int_input={args.int_input} depth={args.int_depth} '
           f'hidden={args.int_hidden_dim}', flush=True)
 
     cache_dir = Path(args.cache_dir) if args.cache_dir else home / 'latent_cache'
@@ -495,6 +503,12 @@ def main():
     print(f"RESULT_VAL {args.out} best_epoch {best_epoch} contact_red_learned {mb['c_red_learned']:.4f} "
           f"contact_red_on {mb['c_red_on']:.4f} noncontact_red_learned {mb['nc_red_learned']:.4f} auroc {mb['auroc']:.4f}", flush=True)
     result = {'args': vars(args), 'best_epoch': best_epoch, 'history': history, 'forecaster_px': fc_px}
+    if 'fc' in rows:  # E47: 검증 data의 깊은 구간(planning t = 4) 수치. test를 보지 않고 planning에 쓸 모델을 고를 때 쓴다
+        model.load_state_dict(torch.load(out_dir / 'weights_best.pt', map_location=device, weights_only=True))
+        mvd = evaluate(model, rows, va_starts, d_c, call=FC_DEPTH - 1)
+        result['val_deep'] = mvd
+        print(f"RESULT_VAL_DEEP {args.out} contact_red_learned {mvd['c_red_learned']:.4f} "
+              f"contact_red_on {mvd['c_red_on']:.4f} noncontact_red_learned {mvd['nc_red_learned']:.4f}", flush=True)
     if fc_px is not None:
         print('RESULT_FCPX ' + args.out + ' ' + ' '.join(f'k{k} {a:.3f} {b:.3f} {c:.3f}' for k, a, b, c in fc_px), flush=True)
     if args.test_data:
