@@ -1904,3 +1904,16 @@ Q3 (첫 계획 800개씩): 실패 episode 수는 `sum_l2` 207(CF-JEPA) / 227(정
 **운영:** E45의 저장 실패(묶기가 `colab exec` 4분 제한에 걸림, 실패 뒤에도 세션을 끔)를 고친 `save.sh`, `watch.sh`를 쓴다. 학습이 끝나면(TRAIN DONE) planning 전에 한 번 저장해 학습 log와 weights를 먼저 받는다.
 
 **비용 상한:** L4 세션 1개, 기한 7시간, 12 CU(수집 약 75분, latent 계산 15분, 학습 3개 동시 약 80분, planning 4조건 × 16 seed 약 2시간).
+
+**실행 상태 (11/18 기준): 아직 실행하지 않았다.** 11/18에는 하루 CU 한도(20) 중 14.4를 이미 써서 실행을 미뤘다. 실행 시점은 팀이 정한다.
+
+**실행 절차**
+- pipeline은 로컬 `outputs/e46/`에 있다(git에서 제외). E45의 pipeline을 복사해 위 세 모델과 판정에 맞게 고쳤다.
+  - `launch.sh`: L4 세션을 만들고 기한(`HOURS`)과 자동 반납을 건 뒤, base(`e32_cf`), 정답 입력 모델(`e39_obsbig`, `outputs/e38/res`), 위치 probe(`outputs/e40/res`)와 현재 working tree의 코드를 올리고 `main.sh`를 띄운다. 감시(`watch.sh`)는 systemd user unit `e46-watch`로 돈다.
+  - `main.sh`: setup, data 수집, smoke(`smk_fca`, `smk_fc0`, `check_forecast.py`, 평가 smoke), latent 계산, 세 모델 동시 학습, 판정 1(`decide.py`), planning 1·2단계, plan log 분석 순서다. 단계마다 status에 `SMOKE OK`, `COLLECT DONE`, `TRAIN DONE`, `GATE`, `STAGE1`, `FINAL`, `ALL DONE` 줄을 남긴다.
+  - `save.sh`: Colab 안에서 `nohup tar`로 묶고 끝 표시를 짧은 호출로 확인한 뒤 크기를 비교하며 받는다. `TRAIN DONE`에서 한 번, `ALL DONE`에서 한 번 받는다. 저장에 실패하면 세션을 끄지 않고 다시 시도한다.
+- 실행 전에 `colab sessions`에 켜진 세션이 없는지, `colab-guard`의 하루 사용량에 12 CU 여유가 있는지 확인한다.
+- 실행: `systemd-run --user --unit=e46-run --collect --setenv=HOURS=7 bash outputs/e46/launch.sh`
+- 감시: `bash outputs/e46/check.sh <초>`가 status의 주요 줄을 기다린다. setup 직후, smoke, 학습 시작, `TRAIN DONE`, `GATE`, planning 시작에서 GPU 사용률, 프로세스, log를 직접 확인한다.
+- 예상 시간표(시작 기준): 수집 약 75분 → 학습 시작 약 2시간 30분 뒤 → 판정 1 약 4시간 뒤 → 판정 1을 통과하면 planning 결과 약 6시간 뒤.
+- 끝나면 결과를 이 절에 적고, 세션이 꺼진 것을 `colab sessions`로 확인하고, Proton Drive `results/E46_forecast_anchor/`에 올린다.
