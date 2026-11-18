@@ -1905,7 +1905,7 @@ Q3 (첫 계획 800개씩): 실패 episode 수는 `sum_l2` 207(CF-JEPA) / 227(정
 
 **비용 상한:** L4 세션 1개, 기한 7시간, 12 CU(수집 약 75분, latent 계산 15분, 학습 3개 동시 약 80분, planning 4조건 × 16 seed 약 2시간).
 
-**실행 상태 (11/18 기준): 아직 실행하지 않았다.** 11/18에는 하루 CU 한도(20) 중 14.4를 이미 써서 실행을 미뤘다. 실행 시점은 팀이 정한다.
+**실행 상태:** 11/18에는 하루 CU 한도(20) 중 14.4를 이미 써서 미뤘고, 11/19 01:00~03:45(KST)에 실행했다. 결과는 이 절 끝에 있다.
 
 **실행 절차**
 - pipeline은 로컬 `outputs/e46/`에 있다(git에서 제외). E45의 pipeline을 복사해 위 세 모델과 판정에 맞게 고쳤다.
@@ -1920,3 +1920,31 @@ Q3 (첫 계획 800개씩): 실패 episode 수는 `sum_l2` 207(CF-JEPA) / 227(정
 - 감시: `bash outputs/e46/check.sh <초>`가 status의 주요 줄을 기다린다. setup 직후, smoke, 학습 시작, `TRAIN DONE`, `GATE`, planning 시작에서 GPU 사용률, 프로세스, log를 직접 확인한다.
 - 예상 시간표(시작 기준): 수집 약 75분 → 학습 시작 약 2시간 30분 뒤 → 판정 1 약 4시간 뒤 → 판정 1을 통과하면 planning 결과 약 6시간 뒤.
 - 끝나면 결과를 이 절에 적고, 세션이 꺼진 것을 `colab sessions`로 확인하고, Proton Drive `results/E46_forecast_anchor/`에 올린다.
+
+**결과 (11/19 실행, L4 세션 1개, 약 5 CU)**
+
+판정 1 미달(STOP)이라 planning 평가는 하지 않았다. test `r1yt`(1,500 episode)에서 학습된 α로 잰 contact z^c 오차 감소율이다.
+
+| 모델 | depth 1 (`RESULT_TEST`) | 첫 예측 (`PLAN0`) | **깊은 구간 (`DEEP`, depth 3~5)** | non-contact depth 1 | AUROC |
+|---|---|---|---|---|---|
+| `e46_fca` (예측 + 실제 frame) | 34.0% | 6.5% | **11.5%** | 15.7% | 0.975 |
+| `e46_fc` (예측) | 34.1% | 7.1% | 11.1% | 15.6% | 0.975 |
+| `e46_fc0` (실제 frame) | 6.4% | 6.4% | 22.0% | 2.1% | 0.974 |
+
+- 판정 1: `GATE FCA d1 0.3398 DEEP 0.1151 | FC d1 0.3408 DEEP 0.1107 | FC0 d1 0.0642 DEEP 0.2200 | MARGIN -0.1049 STOP`. 깊은 구간이 대조군 최댓값(22.0%)보다 10.5%p 낮다. depth 1 기준(30% 이상)은 통과했다.
+- `e46_fc`와 `e46_fc0`는 E45의 `e45_fc`(34.08%, DEEP 11.07%)와 `e45_fc0`(6.42%, DEEP 22.00%)를 소수 넷째 자리까지 똑같이 재현했다. 같은 seed의 data와 학습이 결정적으로 반복된다는 뜻이고, 다시 만든 pipeline이 E45와 같은 조건이라는 확인이기도 하다.
+- forecaster의 obstacle px 오차(`RESULT_FCPX`)도 E45와 같다(k1 8.1 / k3 11.0 / k5 12.9px, persistence 19.1 / 40.1 / 53.1px).
+
+**해석**
+- **실제 frame을 함께 넣어도 깊은 구간 이득이 오르지 않았다.** `e46_fca`는 모든 지표에서 `e46_fc`와 거의 같다(DEEP 11.5 대 11.1%). h_int는 두 입력 중 forecaster 예측에 맞춰지고, 실제 frame을 깊은 위치에서 속도 단서로 쓰는 법은 배우지 못했다.
+- 학습은 rollout 위치 t를 0~5에서 무작위로 고르므로(`forward`의 `call=None`) 깊은 위치도 학습에 들어간다. 그러므로 "깊은 위치를 학습에서 보지 못했다"는 설명은 맞지 않는다. 한 h_int가 모든 위치를 같이 맞추면서, 오차를 크게 줄일 수 있는 가까운 위치(예측이 정확한 곳)에 맞춰진 것으로 추정한다. 이것은 검증하지 않은 가설이다.
+- `e46_fc0`의 깊은 구간 22%는 depth 1의 6%보다 크다. 깊은 위치에서 "마지막 실제 frame"과 굴린 z^c의 차이가 obstacle 이동량을 알려 준다는 E46의 출발 가정과는 맞는 관찰이지만, 그 정보를 forecaster 입력과 함께 쓰게 만드는 데는 실패했다.
+- E45의 결론(label 없는 forecaster 입력은 planning에서 CF-JEPA와 같다)은 그대로다. 이번 실험으로 바꾸지 않는다.
+
+**운영 메모 (다시 만든 pipeline의 첫 실행)**
+- `colab upload`은 95MB 파일에서 Broken pipe로 실패했다(20MB는 된다). `lib.sh`의 `up`/`down`이 20MB 조각으로 주고받고 md5로 확인하게 고쳤다.
+- 갓 만든 세션에서 첫 `colab exec`(자동 반납 걸기)가 응답 없이 5분 제한에 걸렸다. 다시 걸면 1초에 된다. `launch.sh`가 확인하고 3번까지 다시 건다.
+- run.sh를 띄운 원격 명령의 바깥 bash가 끝나지 않아 kernel이 BUSY로 남고 이후 `colab exec`가 모두 막혔다. `colab ssh -- <cmd>`(kernel을 거치지 않는다)로 찾아 그 bash만 PID로 끄고 `colab restart-kernel`로 풀었다. pipeline은 setsid로 띄운 별도 session이라 영향이 없었다. 재시작으로 사라진 자동 반납 thread는 다시 걸었다. `launch.sh`는 이제 subshell로 띄우고 확인은 ssh로 한다.
+- 결과는 `TRAIN DONE`과 `ALL DONE`에서 받았고(각 148MB, 대부분 smoke와 학습 모델의 `int_only_best.pt`), 감시 script가 세션을 끄고 꺼진 것을 확인했다.
+
+**결과물:** Proton Drive `results/E46_forecast_anchor/`에 `e46_logs.tgz`(log, status, `e46_fca`/`e46_fc`/`e46_fc0`의 `config.json`, `metrics.json`, `int_only_best.pt`)와 `pipeline/`이 있다.
