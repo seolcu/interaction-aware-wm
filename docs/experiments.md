@@ -1909,6 +1909,9 @@ Q3 (첫 계획 800개씩): 실패 episode 수는 `sum_l2` 207(CF-JEPA) / 227(정
 
 **실행 절차**
 - pipeline은 로컬 `outputs/e46/`에 있다(git에서 제외). E45의 pipeline을 복사해 위 세 모델과 판정에 맞게 고쳤다.
+  - 11/19: OS 재설치로 로컬 사본을 잃어 다시 만들었다. Proton Drive의 E45 `main.sh`, E38 `collect.sh`(같은 seed), E38·E45 `decide.py`를 바탕으로 했고, `launch.sh`, `save.sh`, `watch.sh`, `check.sh`는 이 절의 설명대로 새로 썼다. Colab 쪽 시작점 `run.sh`(setup → 수집 → main)와 로컬 공용 함수 `lib.sh`를 더했다. 사본을 Proton Drive `results/E46_forecast_anchor/pipeline/`에 올려 두었다.
+  - 입력 파일: base는 `results/E33_r1x_resolve/e32_cf_*` → `outputs/e33/res/`, 정답 입력 모델은 `results/E38_E39_oracle_obstacle/e38_logs.tgz` 안의 `e39_obsbig/int_only_best.pt` → `outputs/e38/res/`, 위치 probe는 `results/E40_planning_diagnosis/pos_probe_e32_cf.pt` → `outputs/e40/res/`.
+  - `decide.py paired`는 E45 `status_live.txt`에서 기록된 값(obs_px − cf_px +3.25, se 1.67)을 그대로 다시 낸다. `decide.py gate`는 세 모델 중 수치가 없는 것이 있으면 STOP이다.
   - `launch.sh`: L4 세션을 만들고 기한(`HOURS`)과 자동 반납을 건 뒤, base(`e32_cf`), 정답 입력 모델(`e39_obsbig`, `outputs/e38/res`), 위치 probe(`outputs/e40/res`)와 현재 working tree의 코드를 올리고 `main.sh`를 띄운다. 감시(`watch.sh`)는 systemd user unit `e46-watch`로 돈다.
   - `main.sh`: setup, data 수집, smoke(`smk_fca`, `smk_fc0`, `check_forecast.py`, 평가 smoke), latent 계산, 세 모델 동시 학습, 판정 1(`decide.py`), planning 1·2단계, plan log 분석 순서다. 단계마다 status에 `SMOKE OK`, `COLLECT DONE`, `TRAIN DONE`, `GATE`, `STAGE1`, `FINAL`, `ALL DONE` 줄을 남긴다.
   - `save.sh`: Colab 안에서 `nohup tar`로 묶고 끝 표시를 짧은 호출로 확인한 뒤 크기를 비교하며 받는다. `TRAIN DONE`에서 한 번, `ALL DONE`에서 한 번 받는다. 저장에 실패하면 세션을 끄지 않고 다시 시도한다.
