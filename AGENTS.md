@@ -125,7 +125,7 @@ This file provides guidance to AI agents when working with code in this reposito
 - CF-JEPA가 distractor를 stable-worldmodel에 어떻게 넣었는지(코드 미공개)
 - Iso-Dream++의 학술지 게재본(TPAMI 등) 여부
 
-## 지금까지의 핵심 결과 (11/18, E44까지)
+## 지금까지의 핵심 결과 (11/18, E45까지)
 
 자세한 수치와 설정은 `docs/experiments.md`에 있다. 같은 실험을 반복하기 전에 해당 E 번호를 먼저 읽는다.
 
@@ -141,6 +141,7 @@ This file provides guidance to AI agents when working with code in this reposito
 - **cost가 병목 (E42):** 범위 제한을 켜고 cost를 agent 위치 거리(정답 위치 label로 학습한 probe)로 바꾸면, 정답 obstacle 모델이 91.6, CF-JEPA가 85.1이다(+6.5 ± 1.2%p, 16 seed 중 13승 0패). 같은 두 모델이 z^c cost에서는 71.6 대 74.1이었다. interaction 정보의 이득은 정확한 예측, 그 예측을 제대로 읽는 cost, env와 같은 action 범위가 모두 있을 때 나타난다. 남은 단서는 위치 label(E43에서 action만으로 학습한 probe로 대체)과 정답 obstacle 입력이다.
 - **label 없는 위치 cost (E43):** action 누적합만으로 학습한 위치 probe는 같은 episode 안 상대 이동을 3.1px로 맞히지만 전체 위치 오차가 12.0px로 사전 기준(10px)에 못 미쳐 planning 평가를 하지 않았다.
 - **기존 benchmark (E44):** 범위 제한으로 CF-JEPA(Distractor TwoRoom N=2)가 84.8에서 95.4로 오른다(16승 0패, 논문 0.95). 공개 LeWM(TwoRoom N=0)은 85.9에서 80.4로 떨어진다(1승 14패). 범위 제한은 `sum_l2` cost를 쓰는 CF-JEPA 계열에서 큰 개선이고, 일반적인 개선은 아니다.
+- **스스로 배운 obstacle 입력 (E45):** action 없이 다음 latent를 예측하는 forecaster(`src/iawm/forecaster.py`)를 정답 obstacle 입력 대신 h_int에 넣었다. 한 block 앞 contact z^c 오차를 34% 줄였다(학습 안 한 대조군 6%, 정답 입력 74%, E39의 latent만 5.5%). 그러나 planning 성공률은 CF-JEPA와 같다(−0.1 ± 1.8%p, 대조군 대비 +0.4 ± 1.4%p, 16 seed). planning이 쓰는 여러 block 앞 feature에서 이득이 11%로 줄어드는 것이 유력한 원인이다. 같은 세션의 정답 입력 모델도 +3.3 ± 1.7%p로 E42(+6.5)보다 작았다. 정답 성분 진단에서 부족한 것은 obstacle 속도다(위치만 5.8%, 위치+속도 73.3%). E46(obstacle 2개)은 E45 통과가 조건이라 하지 않았다.
 - **분석 주의 (E40):** plan log에서 성공한 env는 위치가 멈춘 채 기록이 이어진다. 예측과 비교할 때 goal에 닿은 step 이후를 빼야 한다(`analyze_plan_log.py`에 반영).
 - **현재 목표 (11/16):** 최종 발표(11/26) 전에, 제안 방법이 Collision TwoRoom(r1x, P2)에서 CF-JEPA보다 planning 성공률이 공정 비교로 높다는 결과를 낸다. 다음 실험은 위 결과를 바탕으로 원인을 진단한 뒤 정한다. E42 이후의 질문은 "위치 label과 정답 obstacle 입력 없이도 이 이득이 남는가"다. 개선안마다 근거, 예상 비용, 대조군, 실패 판정 기준을 함께 제시한다.
 
@@ -192,7 +193,7 @@ E25~E37에서 CU를 낭비하거나 결론을 잘못 낼 뻔한 경험에서 나
 - **역할 (중간 발표까지):** 강연우는 gate 구현과 모델 학습, 설규원은 Collision env와 data, 조하은은 평가와 발표 준비를 맡는다. CF-JEPA 재구현은 설규원이 했다(E3).
 - **코드 (GitHub):** 팀원 3명 모두 collaborator다. 작업 단위로 branch(`<이름>/<작업>`, 예: `yeonwoo/gate`)를 만들고 PR로 main에 합친다.
 - **결과물 (Proton Drive):** 그림, 영상, checkpoint, data는 공유 폴더의 `results/E<번호>_<이름>/`에 올리고, 폴더의 `README.txt`에 한 줄 설명을 더한다.
-- **실험 기록:** `docs/experiments.md`에 E 번호를 이어서 붙인다(현재 E44까지 번호를 정했다). 목적, 설정, 실행 명령, 결과, 남은 문제를 적는다. 실험 번호를 먼저 정하고 쓰면 번호가 겹치지 않는다.
+- **실험 기록:** `docs/experiments.md`에 E 번호를 이어서 붙인다(현재 E45까지 번호를 정했다). 목적, 설정, 실행 명령, 결과, 남은 문제를 적는다. 실험 번호를 먼저 정하고 쓰면 번호가 겹치지 않는다.
 - **Colab:** 각자 자기 계정을 쓴다. 환경 준비는 `scripts/colab/setup_lewm.sh` 하나로 된다(약 10분, data 포함). 운영 규칙은 위 "실험 운영 규칙"을 따른다.
 - **팀원에게 일을 줄 때:** 구체적인 구현 방법보다 요구사항(무엇이 되어야 하는지, 어떻게 확인하는지)을 준다. 간단한 일은 설규원이 직접 한다.
 
