@@ -2056,3 +2056,48 @@ planning (success rate %, r2b, 범위 제한 + 위치 cost, seed 42~57 paired, L
 - **저장 오판:** `TRAIN DONE` 저장에서 크기 확인 exec가 "Connection was lost"로 실패해 파일이 없다고 오판했다. `rsize`가 3번까지 다시 묻게 고쳤고, 다음 주기에 받았다. 두 수정은 E46 pipeline에도 넣었다.
 
 **결과물:** 로컬 `outputs/e47/res/`(git 제외)의 `base/`(fine-tune한 base `e47_cf/base_final.pt`, `config.json`), `train/`, `final/`. Proton Drive `results/E47_two_obstacles/`.
+
+## 2026-11-20 · E48. cross-fit forecaster: forecaster를 h_int와 다른 data로 학습 (obstacle 2개, base 고정)
+
+**목적:** E47에서 label 없는 forecaster 입력(`e47_fc`)은 깊은 구간에서 base 예측을 오히려 나쁘게 만들었다(test −15.4%, 검증 −13.5%). 미래 정보가 없는 대조군 `e47_fc0`는 같은 구간에서 +11.4%(검증)였다. E47의 가설은 다음과 같다. forecaster와 h_int를 같은 `r2y` 학습 episode로 학습하므로, h_int가 학습 때 받는 forecaster 예측은 처음 보는 data에서보다 정확하다. 그래서 h_int는 그 예측을 과하게 믿도록 배운다. 이 실험은 forecaster를 h_int가 쓰지 않는 data로 학습해(cross-fit) 이 가설을 직접 시험한다. 통과하면 같은 조건에서 planning 성공률을 잰다.
+
+**구현**
+- `scripts/train_int_frozen.py --fc-data <h5>`: forecaster의 정규화 통계와 학습에 이 data의 모든 episode를 쓴다. h_int는 이전처럼 `--data`로 학습한다. planning에서는 checkpoint에 들어 있는 forecaster를 그대로 쓰므로 바뀌는 것이 없다.
+- 진단 `RESULT_FCGAP`: forecast column별(depth 1~5) 예측 오차를 h_int 학습 episode와 검증 episode에서 따로 잰다(frame latent 표준편차로 나눈 MSE). 같은 data로 학습한 forecaster라면 학습 episode 쪽이 작아야 한다. 로컬에서 임의 data로 손 계산과 같은 값이 나오는지 확인했다.
+
+**설정**
+- base `e47_cf`(E47에서 fine-tune한 것, 로컬 `outputs/e47/res/base/`)와 위치 probe `pos_probe_e47_cf.pt`를 그대로 쓴다. fine-tune은 하지 않는다.
+- data(모두 obstacle 2개, 반지름 22): `r2y`(h_int 학습, seed 4242), `r2yt`(test, seed 777), `collision_tworoom`(planning 시작 상태)는 E47과 같은 seed로 다시 모은다. forecaster 학습용 `r2f`(1만 episode, seed 6262)를 새로 모은다. E47 결과에서는 `r2b`를 쓰자고 적었으나, `r2b`는 base fine-tune에 쓴 data라 latent 분포가 다를 수 있어 새 data로 바꾼다. 어차피 세션마다 다시 모아야 해서 비용은 같다.
+- h_int 크기와 학습은 E45~E47과 같다(depth 4, hidden 256, mlp 1024, 30 epoch, resolve 입력, forecaster 20,000 step).
+
+| 이름 | h_int 추가 입력 | forecaster 학습 data | 역할 |
+|---|---|---|---|
+| `e48_obs` | 정답 obstacle × 2개 (12) | – | 상한 (E47 Q0 재현) |
+| `e48_fcx` | forecaster 예측 (192) | `r2f` (cross-fit) | 제안 |
+| `e48_fcs` | forecaster 예측 (192) | `r2y` 학습 episode (= `e47_fc`) | 가설 대조군 (진단만) |
+| `e48_fc0` | 마지막 실제 frame (192) | – (학습하지 않음) | 대조군 |
+
+**판정 (실행 전에 정함)**
+- 가설 진단(참고, 진행을 막지 않는다): `e48_fcs`의 depth 5 오차가 학습 episode에서 검증 episode의 0.9배 이하이고, `e48_fcx`의 검증 깊은 구간 contact 오차 감소율(`RESULT_VAL_DEEP`)이 `e48_fcs`보다 5%p 이상 높으면 E47 가설이 지지된다고 본다. `e48_fcs`는 `e47_fc`와 같은 설정이라 수집 data가 같으면 E47 수치가 재현되어야 한다.
+- **판정 1 (planning으로 갈지):** `e48_fcx`의 `RESULT_VAL_DEEP`가 `e48_fc0`보다 높아야 한다. test 수치는 보지 않는다. 미달이면 학습 결과만 남기고 planning 없이 끝낸다(`decide.py gate`).
+- planning 조건은 E47과 같다: `world.num_obstacles=2 +world.obstacle_radius=22.0`, P2 + `+action_clip=true` + `+cost=agent_px +pos_probe=pos_probe_e47_cf.pt`, `+plan_log`. L4 한 세션에서 seed 42~57(16개)을 짝짓는다.
+- 비교 4개: `e47_cf`(CF-JEPA), `e48_fcx`(제안), `e48_fc0`(대조군), `e48_obs`(정답 입력).
+- 통과 기준(paired, 16 seed):
+  - **Q0** `e48_obs` − `e47_cf`가 +3%p 이상이고 표준오차의 2배 이상(E47 재현).
+  - **Q1** `e48_fcx` − `e47_cf`가 +3%p 이상이고 표준오차의 2배 이상.
+  - **Q2** `e48_fcx` − `e48_fc0`가 0보다 크고 표준오차의 2배 이상.
+- 해석 계획
+  - 판정 1 미달, 가설 진단 지지: 학습 data 겹침은 원인의 일부지만, 겹침을 없애도 forecaster 예측이 마지막 실제 frame보다 나은 입력이 되지 못한다. obstacle 2개에서 label 없는 forecaster 방식의 한계로 정리한다.
+  - 판정 1 미달, 가설 진단 기각: E47 가설이 틀렸다. 깊은 구간의 손해는 forecaster 예측 자체의 질 때문이다.
+  - 판정 1 통과, Q1 미달: 예측은 나아졌지만 planning 이득으로 이어지지 않는다(E45와 같은 양상).
+  - Q1, Q2 통과: label 없는 제안 방법이 obstacle 2개에서 CF-JEPA를 이긴 첫 결과다.
+
+**운영:** E47 pipeline을 고쳐 `outputs/e48/`에 둔다(git 제외). 바뀐 점은 다음과 같다.
+- fine-tune과 probe 학습 단계를 뺐다. `launch.sh`가 E47 base를 E47과 같은 경로 이름(`e47_cf/weights_epoch_3.pt`)으로, probe를 `checkpoints/`에 올린다.
+- smoke test는 `r2dbg`(h_int)와 `r2fdbg`(100 episode, seed 12, forecaster)로 cross-fit 경로와 같은 data 경로를 한 번씩 돌린다. 이어서 planning이 forecast feature `(.*, 7, 192)`를 받는지, base 경로가 도는지 확인한다.
+- `r2f` latent cache를 `r2y`·`r2yt` cache와 동시에 미리 만든다.
+- 실행: `systemd-run --user --unit=e48-run --collect --setenv=HOURS=8 bash "$PWD/outputs/e48/launch.sh"`
+
+**비용 상한:** L4 세션 1개, 기한 8시간, 16 CU. 예상 시간은 setup 15분, 수집 약 2시간(`r2f`와 `r2y` 동시), latent 계산 15분, 학습 4개 동시 약 90분, planning 4조건 × 16 seed 약 2.2시간이다. 합계 약 6시간, 12 CU다(E47 실측 약 1.9 CU/시간). 판정 1에서 멈추면 약 4시간, 8 CU다.
+
+**실행 상태:** 사전 등록. 11/20 0시(KST) 이후 실행한다(11/19 사용량이 하루 한도를 넘었다).

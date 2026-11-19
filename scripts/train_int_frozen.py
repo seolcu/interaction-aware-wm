@@ -22,6 +22,8 @@ E35와 다른 것:
   별로 미리 계산해 두고, 학습 때 planning과 같은 depth 분포로 고른다(아래 forward 참고). 검증과 test의 주 지표는 depth 1
   (정답 obstacle 입력의 수치와 같은 조건)이고, depth를 planning 마지막 쪽처럼 깊게 한 수치(RESULT_TEST_DEEP)도 남긴다.
   --fc-anchor (E46): forecaster 예측 뒤에 "마지막 실제 frame" latent(anchor_columns)를 이어 붙여 입력을 2배로 한다.
+  --fc-data (E48): forecaster를 h_int 학습 data(--data)가 아닌 따로 수집한 data로 학습한다(cross-fit). 같은 data로 학습하면
+  h_int가 학습 때 받는 forecaster 예측이 처음 보는 data에서보다 정확해져 그 입력을 과하게 믿을 수 있다(E47의 가설).
   --fc-depth-tag (E47): 맨 뒤에 그 feature의 column(depth) one-hot(iawm.forecaster.N_TAGS)을 붙인다. planning에서는
   Forecaster.plan_features가 같은 index(tag_index)를 붙인다.
 - 검증: data의 마지막 --val-episodes episode는 학습에 쓰지 않고, epoch마다 contact / non-contact z^c 오차를 잰다.
@@ -207,6 +209,29 @@ def forecast_columns(fc, rows, batch=32768):
 
 
 @torch.no_grad()
+def forecast_gap(rows, off, ep_len, tr_eps, va_eps):
+    """forecast column별 예측 오차를 h_int 학습 episode와 검증 episode에서 따로 잰다 (E48 진단).
+
+    column d-1(depth d)은 frame r+FS를 예측한다. 오차는 frame latent 표준편차로 나눈 MSE다. 학습 episode 쪽이 확연히
+    작으면 h_int는 학습 때 처음 보는 data보다 정확한 입력을 받은 것이다. 반환 [(depth, train, val), ...].
+    """
+    z, fcc = rows['z'], rows['fc']
+    zs = z.float().std(0).clamp_min(1e-6)
+
+    def err(col, eps):
+        r = np.concatenate([off[e] + np.arange(0, ep_len[e] - FS) for e in eps if ep_len[e] > FS])
+        r = torch.from_numpy(r.astype(np.int64)).to(z.device)
+        tot = 0.0
+        for i in range(0, len(r), 65536):
+            b = r[i:i + 65536]
+            tot += (((fcc[col, b].float() - z[b + FS].float()) / zs).pow(2).mean(-1)).sum().item()
+        return tot / len(r)
+    res = [(d, err(d - 1, tr_eps), err(d - 1, va_eps)) for d in range(1, FC_DEPTH + 1)]
+    print('forecast error train/val by depth: ' + ' '.join(f'd{d} {a:.4f}/{b:.4f}' for d, a, b in res), flush=True)
+    return res
+
+
+@torch.no_grad()
 def anchor_columns(rows):
     """forecast_columns와 같은 index의 "마지막 실제 frame" latent (E46). 반환 (FC_DEPTH + 2, N, D) float16.
 
@@ -367,6 +392,7 @@ def main():
     ap.add_argument('--fc-depth', type=int, default=3)
     ap.add_argument('--fc-anchor', action='store_true', help='E46: forecaster 예측과 마지막 실제 frame을 함께 넣는다')
     ap.add_argument('--fc-depth-tag', action='store_true', help='E47: forecaster feature에 depth one-hot을 붙인다')
+    ap.add_argument('--fc-data', default=None, help='E48: forecaster 학습 data (기본: --data의 학습 episode, 같은 data)')
     ap.add_argument('--num-obstacles', type=int, default=1)
     ap.add_argument('--int-input', default='resolve', choices=['state', 'resolve'])
     ap.add_argument('--int-depth', type=int, default=2)
@@ -433,18 +459,28 @@ def main():
     va_starts = torch.from_numpy(clip_starts(off, ep_len, range(n_ep - n_val, n_ep), FS)).to(device)
     print(f'data={args.data} episodes train {n_ep - n_val} val {n_val} clips train {len(tr_starts)} val {len(va_starts)}', flush=True)
     fc_px = None
+    fc_gap = None
     if fc is not None:  # E45: forecaster를 먼저 학습(label 없음)하고 고정한 뒤 feature column을 만든다
-        tr_rows = torch.from_numpy(np.concatenate([np.arange(off[e], off[e] + ep_len[e]) for e in range(n_ep - n_val)])).to(device)
-        fc.set_stats(rows['z'][tr_rows])
-        del tr_rows
+        if args.fc_data:  # E48: cross-fit. h_int 학습 data와 겹치지 않는 data의 모든 episode로 학습한다
+            assert Path(args.fc_data).name != Path(args.data).name, '--fc-data는 --data와 달라야 한다'
+            frows, foff, flen = rows_of(args.fc_data)
+            f_eps = range(len(flen))
+            print(f'forecaster data={args.fc_data} episodes {len(flen)} (cross-fit)', flush=True)
+        else:
+            frows, foff, flen, f_eps = rows, off, ep_len, range(0, n_ep - n_val)
+        f_rows = torch.from_numpy(np.concatenate([np.arange(foff[e], foff[e] + flen[e]) for e in f_eps])).to(device)
+        fc.set_stats(frows['z'][f_rows])
+        del f_rows
         if args.fc_steps > 0:
-            train_forecaster(fc, rows, off, ep_len, range(0, n_ep - n_val), args.fc_steps, device)
+            train_forecaster(fc, frows, foff, flen, f_eps, args.fc_steps, device)
+        del frows
         fc.eval().requires_grad_(False)
         fc_px = forecaster_px(fc, rows, off, ep_len, range(0, n_ep - n_val), range(n_ep - n_val, n_ep), device, d_c)
         rows['fc'] = forecast_columns(fc, rows)
         if fc.anchor:
             rows['anc'] = anchor_columns(rows)
         fc_ready[0] = True
+        fc_gap = forecast_gap(rows, off, ep_len, range(0, n_ep - n_val), range(n_ep - n_val, n_ep))
         print(f"forecast columns {tuple(rows['fc'].shape)} ({rows['fc'].numel() * 2 / 1e9:.2f} GB)", flush=True)
 
     # 확인: 학습 전에는 int_out이 0이라 예측이 base와 같아야 한다 (gate off = CF-JEPA)
@@ -502,13 +538,15 @@ def main():
     mb = history[best_epoch]
     print(f"RESULT_VAL {args.out} best_epoch {best_epoch} contact_red_learned {mb['c_red_learned']:.4f} "
           f"contact_red_on {mb['c_red_on']:.4f} noncontact_red_learned {mb['nc_red_learned']:.4f} auroc {mb['auroc']:.4f}", flush=True)
-    result = {'args': vars(args), 'best_epoch': best_epoch, 'history': history, 'forecaster_px': fc_px}
+    result = {'args': vars(args), 'best_epoch': best_epoch, 'history': history, 'forecaster_px': fc_px, 'forecast_gap': fc_gap}
     if 'fc' in rows:  # E47: 검증 data의 깊은 구간(planning t = 4) 수치. test를 보지 않고 planning에 쓸 모델을 고를 때 쓴다
         model.load_state_dict(torch.load(out_dir / 'weights_best.pt', map_location=device, weights_only=True))
         mvd = evaluate(model, rows, va_starts, d_c, call=FC_DEPTH - 1)
         result['val_deep'] = mvd
         print(f"RESULT_VAL_DEEP {args.out} contact_red_learned {mvd['c_red_learned']:.4f} "
               f"contact_red_on {mvd['c_red_on']:.4f} noncontact_red_learned {mvd['nc_red_learned']:.4f}", flush=True)
+    if fc_gap is not None:
+        print('RESULT_FCGAP ' + args.out + ' ' + ' '.join(f'd{d} {a:.4f} {b:.4f}' for d, a, b in fc_gap), flush=True)
     if fc_px is not None:
         print('RESULT_FCPX ' + args.out + ' ' + ' '.join(f'k{k} {a:.3f} {b:.3f} {c:.3f}' for k, a, b, c in fc_px), flush=True)
     if args.test_data:
