@@ -1999,4 +1999,60 @@ Q3 (첫 계획 800개씩): 실패 episode 수는 `sum_l2` 207(CF-JEPA) / 227(정
 
 **비용 상한:** L4 세션 1개, 기한 11시간, 20 CU. 예상 시간은 수집 약 90분, fine-tune 약 3.5시간, probe와 latent 계산 약 30분, 학습 4개 동시 약 90분, planning 4조건 × 16 seed 약 2.5시간이다. 11/19에는 E46에서 약 5 CU를 썼으므로 하루 한도(20)를 넘는다. colab-guard는 한도를 넘어도 돌고 있는 세션은 끄지 않고, 그날 새 세션만 막는다.
 
-**실행 상태:** 사전 등록(11/19). 결과는 이 절 끝에 적는다.
+**실행 상태:** 11/19 08:53~17:20(KST)에 실행했다. 결과는 아래에 있다.
+
+**결과: Q0 통과, Q1·Q2 미달.** L4 한 세션.
+
+예측 (test `r2yt`, contact z^c 오차 감소율, 학습된 α)
+
+| 모델 | depth 1 (`RESULT_TEST`) | 첫 예측 (`PLAN0`) | 깊은 구간 (`DEEP`) | 검증 깊은 구간 (`VAL_DEEP`) | best epoch |
+|---|---|---|---|---|---|
+| `e47_obs` (정답 입력) | **60.4%** | – | – | – | 22 |
+| `e47_fc` (forecaster) | 12.6% | −1.5% | **−15.4%** | −13.5% | 18 |
+| `e47_fcd` (+ depth one-hot) | 12.6% | +1.9% | **−19.1%** | −17.6% | 10 |
+| `e47_fc0` (대조군) | 2.7% | 2.7% | 10.6% | 11.4% | 4 |
+
+- base `e47_cf`: fine-tune의 검증 forward loss는 시작 전 0.097, epoch 1~3에서 0.139, 0.097, 0.054다. 위치 probe의 agent 오차는 0.95px다(obstacle 22px는 obstacle 2개의 순서가 모호해서 크다. cost에는 agent만 쓴다).
+- 제안 모델 고르기: `PICK e47_fc`(검증 깊은 구간 −13.5% 대 `e47_fcd` −17.6%).
+- E46 가설(depth를 구분하지 못해서 깊은 구간이 나쁘다)은 지지되지 않는다. depth one-hot을 줘도 깊은 구간은 나아지지 않았다(−19.1%).
+- forecaster의 obstacle px 진단(`RESULT_FCPX`)은 obstacle 2개에서 쓸 수 없다. 첫 obstacle 위치 probe가 실제 latent에서도 22px라 비교 기준이 되지 않는다.
+
+planning (success rate %, r2b, 범위 제한 + 위치 cost, seed 42~57 paired, L4 한 세션)
+
+| 모델 | 평균 | seed 42~57 |
+|---|---|---|
+| `e47_cf` (CF-JEPA) | 77.5 | 80 84 78 80 78 76 70 74 78 86 64 78 82 72 80 80 |
+| `e47_fc` (제안) | 75.9 | 66 70 82 74 82 74 78 80 82 80 78 74 64 66 80 84 |
+| `e47_fc0` (대조군) | 80.1 | 82 78 78 84 90 78 70 74 78 84 82 86 82 82 70 84 |
+| `e47_obs` (정답 입력) | **89.4** | 94 90 92 84 84 92 86 86 86 94 96 86 92 90 86 92 |
+
+| 비교 | 차이 (paired) | 이긴 / 진 seed | 판정 |
+|---|---|---|---|
+| **Q0** `e47_obs` − `e47_cf` | **+11.88 ± 1.71** | **16 / 0** | **통과** |
+| Q1 `e47_fc` − `e47_cf` | −1.62 ± 2.20 | 7 / 8 | 미달 |
+| Q2 `e47_fc` − `e47_fc0` | −4.25 ± 2.24 | 5 / 10 | 미달 |
+| 참고 `e47_fc0` − `e47_cf` | +2.62 ± 1.71 | 8 / 3 | |
+| 참고 `e47_obs` − `e47_fc` | +13.50 ± 2.08 | 16 / 0 | |
+
+고른 계획에서의 예측(`analyze_plan_log.py`, 800 episode)
+
+| 모델 | 실패 episode 수 | 실패 중 도착한다고 예측한 비율 | 5 block 뒤 contact 오차 (px) |
+|---|---|---|---|
+| `e47_cf` | 180 | 0.95 | 49.0 |
+| `e47_fc` | 193 | 0.95 | 47.3 |
+| `e47_fc0` | 159 | 0.94 | 49.0 |
+| `e47_obs` | 85 | **0.85** | **40.0** |
+
+**해석**
+- **obstacle이 2개면 interaction 정보의 planning 이득이 커진다.** 정답 obstacle 입력 모델이 CF-JEPA를 +11.9%p 이기고 16개 seed에서 모두 이겼다. 같은 비교가 obstacle 1개(r1x)에서는 +3.3 ± 1.7(E45), +6.5 ± 1.2(E42)였다. CF-JEPA는 77.5%로 r1x(86.6%, E45)보다 낮다. obstacle이 늘면 z^c만으로 push를 예측하기 어려워지고, interaction module이 고칠 여지가 커진다. 발표 피드백의 "obstacle이 많아질 때"에 대한 답이다. 정답 입력 모델은 실패 episode를 절반 이하로 줄였고(180 → 85), 실패할 계획을 도착한다고 잘못 예측하는 비율도 낮다(0.95 → 0.85).
+- **label 없는 forecaster 입력은 obstacle 2개에서 더 약하다.** depth 1 이득이 12.6%로 obstacle 1개(34%, E45)의 약 1/3이고, 깊은 구간에서는 base 예측을 오히려 나쁘게 만든다(−15%). planning에서는 CF-JEPA보다 조금 낮다.
+- **유력한 원인은 forecaster와 h_int의 학습 data가 같다는 점이다(검증하지 않은 가설).** 학습 log에서 h_int의 학습 loss는 계속 줄지만 검증 오차는 epoch 5 무렵부터 그대로다. 미래 정보가 없는 대조군 `e47_fc0`도 학습 loss가 0.075에서 0.049로 줄지만 검증 contact 오차는 epoch 29에 −3.7%로 나빠진다. forecaster는 h_int와 같은 `r2y` 학습 episode로 학습되므로, 학습 data의 forecaster 예측(특히 여러 step 굴린 값)은 처음 보는 data에서보다 정확하다. 그러면 h_int는 그 예측을 믿도록 배우고, 검증·test·planning에서는 틀린 예측을 그대로 반영한다. depth가 깊을수록 이 차이가 커지므로 깊은 구간이 음수가 된 것과 맞는다. E45·E46의 깊은 구간 이득이 작았던 것도 같은 원인이 약하게 나타난 것일 수 있다.
+- **다음(E48):** forecaster를 다른 data(`r2b`)로 학습해, h_int가 학습 때도 처음 보는 data의 forecaster 예측을 받게 한다(cross-fit). base `e47_cf`를 다시 쓴다.
+
+**비용과 운영:** 세션 08:53~17:20. 운영 중 생긴 문제는 다음과 같다.
+- **수집 속도:** 수집 3개를 동시에 돌리자 CPU 12개에 torch thread가 몰려(load 18) smoke 수집보다 15~25배 느려졌다. 수집만 PID로 끄고 프로세스당 thread 6개로 2개씩 돌렸다(`collect.sh`에 반영). 약 30분을 잃었다.
+- **기한 연장:** 그래서 guard 기한을 21:30으로 늘렸다. Colab 쪽 자동 반납 연장(`colab-guard arm`)은 exec 연결이 끊겨 실패했고, ssh로 `/content/selfstop_deadline`을 직접 고쳤다(자동 반납 thread는 매분 이 파일을 다시 읽는다).
+- **감시 오류:** `tail -c 200`이 진행 막대 문자(UTF-8)를 중간에서 잘라 원격 wrapper가 UnicodeDecodeError로 실패했고, 상태 파일이 30분 갱신되지 않았다. `lib.sh`의 wrapper가 `errors='replace'`로 읽게 고치고 감시를 다시 띄웠다.
+- **저장 오판:** `TRAIN DONE` 저장에서 크기 확인 exec가 "Connection was lost"로 실패해 파일이 없다고 오판했다. `rsize`가 3번까지 다시 묻게 고쳤고, 다음 주기에 받았다. 두 수정은 E46 pipeline에도 넣었다.
+
+**결과물:** 로컬 `outputs/e47/res/`(git 제외)의 `base/`(fine-tune한 base `e47_cf/base_final.pt`, `config.json`), `train/`, `final/`. Proton Drive `results/E47_two_obstacles/`.
