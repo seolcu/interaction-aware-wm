@@ -2100,4 +2100,70 @@ planning (success rate %, r2b, 범위 제한 + 위치 cost, seed 42~57 paired, L
 
 **비용 상한:** L4 세션 1개, 기한 8시간, 16 CU. 예상 시간은 setup 15분, 수집 약 2시간(`r2f`와 `r2y` 동시), latent 계산 15분, 학습 4개 동시 약 90분, planning 4조건 × 16 seed 약 2.2시간이다. 합계 약 6시간, 12 CU다(E47 실측 약 1.9 CU/시간). 판정 1에서 멈추면 약 4시간, 8 CU다.
 
-**실행 상태:** 사전 등록. 11/20 0시(KST) 이후 실행한다(11/19 사용량이 하루 한도를 넘었다).
+**실행 상태:** 11/20 00:06~04:17(KST)에 실행했다. 결과는 아래에 있다.
+
+**결과: 가설 진단 지지, 판정 1 미달(planning 미실행).** L4 한 세션, 7.7 CU.
+
+예측 (contact z^c 오차 감소율, 학습된 α. test는 `r2yt`)
+
+| 모델 | depth 1 (test) | 첫 예측 (test `PLAN0`) | 깊은 구간 (test `DEEP`) | 깊은 구간 (검증 `VAL_DEEP`) | best epoch |
+|---|---|---|---|---|---|
+| `e48_obs` (정답 입력) | 60.4% | – | – | – | 22 |
+| `e48_fcx` (cross-fit) | **13.8%** | 1.5% | **8.1%** | **9.8%** | 9 |
+| `e48_fcs` (같은 data, = `e47_fc`) | 12.6% | −1.5% | −15.4% | −13.5% | 18 |
+| `e48_fc0` (대조군) | 2.7% | 2.7% | 10.6% | 11.4% | 4 |
+
+forecast 예측 오차 (`RESULT_FCGAP`, latent 표준편차로 나눈 MSE, h_int 학습 episode / 검증 episode)
+
+| 모델 | depth 1 | depth 3 | depth 5 | depth 5 비 (학습/검증) |
+|---|---|---|---|---|
+| `e48_fcx` | 0.256 / 0.255 | 0.570 / 0.566 | 0.766 / 0.764 | 1.00 |
+| `e48_fcs` | 0.194 / 0.257 | 0.192 / 0.571 | **0.127 / 0.773** | **0.16** |
+| `e48_fc0` (persistence) | 0.406 / 0.399 | 1.168 / 1.141 | 1.544 / 1.530 | 1.01 |
+
+- 판정 1: `GATE STOP`(검증 깊은 구간 `e48_fcx` 9.8% 대 `e48_fc0` 11.4%). planning은 하지 않았다.
+- 가설 진단: 두 조건을 모두 만족한다. `e48_fcs`의 depth 5 오차 비는 0.16(기준 0.9 이하)이고, `e48_fcx`의 검증 깊은 구간은 `e48_fcs`보다 23.3%p 높다(기준 5%p).
+- 재현: `e48_fcs`는 `e47_fc`의 모든 수치(depth 1 12.62%, DEEP −15.43%, VAL_DEEP −13.52%, best epoch 18)를 그대로 재현했다. 같은 seed로 다시 모은 data가 E47과 같다는 뜻이다.
+
+**해석**
+- **E47 가설이 맞았다.** 같은 data로 학습한 forecaster는 h_int 학습 episode에서 5 step 뒤 예측이 검증 episode보다 6배 정확하다(0.127 대 0.773). depth가 깊을수록 오히려 학습 episode 오차가 작아지는데, forecaster가 학습 episode의 미래를 외웠기 때문이다. h_int는 이 입력을 믿도록 배우고 처음 보는 data에서 틀린다. cross-fit으로 이 차이를 없애자 깊은 구간이 −13.5%에서 +9.8%로 바뀌었다. E45·E46의 깊은 구간 이득이 작았던 것도 같은 원인일 가능성이 크다.
+- **그래도 cross-fit 예측은 마지막 실제 frame보다 나은 입력이 아니다.** forecaster의 5 step 뒤 latent 오차는 persistence의 절반이다(0.77 대 1.53). 그런데 h_int 입력으로는 실제 frame 쪽이 깊은 구간에서 조금 낫다(11.4% 대 9.8%). 실제 frame은 window 위치마다 다른 시점의 정확한 obstacle 위치를 주어 속도를 알 수 있지만, forecaster 예측은 미래를 평균으로 흐린다고 본다. 두 입력이 담은 정보가 다르다.
+- **다음(E49):** cross-fit 예측과 마지막 실제 frame을 함께 넣는다. E46에서 같은 설계가 실패한 것(h_int가 예측만 따랐다)은 같은 data로 학습한 forecaster를 과하게 믿은 탓일 수 있다.
+
+**운영:** 문제 없이 끝났다. `TRAIN DONE` 저장은 원격 분할이 실패했지만(`remote split failed`), 마지막 저장(`final`)이 모든 log를 받았다. 감시가 세션을 끄고 꺼진 것을 확인했다.
+
+**결과물:** 로컬 `outputs/e48/res/final/`(git 제외), Proton Drive `results/E48_crossfit_forecaster/`.
+
+## 2026-11-20 · E49. cross-fit forecaster 예측과 마지막 실제 frame을 함께 h_int 입력으로 (obstacle 2개, base 고정)
+
+**목적:** E46(obstacle 1개)에서 forecaster 예측과 마지막 실제 frame을 함께 넣은 모델(`e46_fca`)은 예측만 넣은 모델과 같았다. h_int가 예측만 따르고 실제 frame을 쓰지 않았다. E48에서 그 원인 후보를 확인했다. 같은 data로 학습한 forecaster의 예측은 h_int 학습 때 처음 보는 data보다 6배 정확해서, h_int가 그 예측을 과하게 믿는다. cross-fit 예측은 학습 때도 처음 보는 data만큼만 맞으므로, h_int가 예측의 오차를 실제 frame으로 보완하도록 배울 수 있다. E48에서 cross-fit 예측(깊은 구간 9.8%)과 실제 frame(11.4%)은 서로 다른 정보를 담았다. 둘을 함께 넣으면 각각보다 나은지 본다.
+
+**구현:** 새 코드는 없다. `scripts/train_int_frozen.py --fc-data r2f.h5 --fc-anchor`로 두 옵션을 함께 쓴다. planning에서 실제 frame을 붙이는 경로는 E46에서 확인했다(feature `(.*, 7, 384)`).
+
+**설정:** base `e47_cf`, 위치 probe `pos_probe_e47_cf.pt`, data(`r2f`, `r2y`, `r2yt`, `collision_tworoom`, 같은 seed), h_int 크기와 학습은 E48과 같다.
+
+| 이름 | h_int 추가 입력 | 역할 |
+|---|---|---|
+| `e49_fxa` | cross-fit 예측 + 마지막 실제 frame (384) | 제안 |
+| `e49_fcx` | cross-fit 예측 (192) | 예측만 넣은 대조군 (`e48_fcx` 재현) |
+| `e49_fc0` | 마지막 실제 frame (192) | 실제 frame만 넣은 대조군 |
+| `e49_obs` | 정답 obstacle × 2개 (12) | 상한 (Q0 재현) |
+
+**판정 (실행 전에 정함)**
+- **판정 1 (planning으로 갈지):** `e49_fxa`의 검증 깊은 구간 contact 오차 감소율(`RESULT_VAL_DEEP`)이 `e49_fc0`보다 높아야 한다. test 수치는 보지 않는다. 미달이면 planning 없이 끝낸다.
+- 가설 진단(참고, 진행을 막지 않는다): `e49_fxa`의 검증 깊은 구간이 `e49_fcx`와 `e49_fc0` 중 높은 쪽보다 2%p 이상 높고, test depth 1이 `e49_fcx`보다 낮지 않으면 "cross-fit이면 h_int가 두 입력을 함께 쓴다"는 가설이 지지된다고 본다.
+- planning 조건과 통과 기준은 E48과 같다(obstacle 2개, 범위 제한 + 위치 cost, seed 42~57 paired). 비교 4개는 `e47_cf`, `e49_fxa`(prop), `e49_fc0`, `e49_obs`다.
+  - **Q0** `e49_obs` − `e47_cf`가 +3%p 이상이고 표준오차의 2배 이상.
+  - **Q1** `e49_fxa` − `e47_cf`가 +3%p 이상이고 표준오차의 2배 이상.
+  - **Q2** `e49_fxa` − `e49_fc0`가 0보다 크고 표준오차의 2배 이상.
+- 해석 계획
+  - 판정 1 미달: cross-fit을 해도 forecaster 예측이 실제 frame에 더할 정보가 없다. obstacle 2개에서 label 없는 forecaster 방식은 여기서 정리하고, forecaster를 거치지 않는 속도 단서(실제 frame의 차이)를 직접 넣는 쪽으로 간다.
+  - 판정 1 통과, Q1 미달: 예측 이득이 planning 이득으로 이어지지 않는다(E45와 같은 양상). plan log로 원인을 진단한다.
+  - Q1, Q2 통과: label 없는 제안 방법이 obstacle 2개에서 CF-JEPA를 이긴 첫 결과다. seed를 늘리거나 obstacle 3개에서 확인한다.
+
+**운영:** E48 pipeline을 고쳐 `outputs/e49/`에 둔다(git 제외). smoke test에서 cross-fit + 실제 frame 경로(`--fc-data r2fdbg.h5 --fc-anchor`)를 학습하고 planning이 feature `(.*, 7, 384)`를 받는지 확인한다.
+- 실행: `systemd-run --user --unit=e49-run --collect --setenv=HOURS=8 bash "$PWD/outputs/e49/launch.sh"`
+
+**비용 상한:** L4 세션 1개, 기한 8시간, 16 CU. E48 실측 기준으로 판정 1에서 멈추면 약 4시간 15분, 8 CU이고, planning까지 가면 약 6시간 30분, 12.5 CU다. 11/20에는 E48에서 7.7 CU를 써서 planning까지 가면 하루 한도(20)를 조금 넘는다. 돌고 있는 세션은 한도와 상관없이 기한까지 돈다.
+
+**실행 상태:** 사전 등록.
