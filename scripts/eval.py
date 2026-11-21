@@ -64,7 +64,7 @@ def img_transform(cfg):
 
 
 def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, oracle_horizon: int = 0,
-                        plan_log: bool = False, clip_history: bool = False):
+                        plan_log: bool = False, clip_history: bool = False, motion: bool = False):
     """WorldModelPolicy에 두 가지를 더한다 (E26).
 
     obs_fix: World._evaluate_from_dataset은 env를 dataset 시작 상태로 맞춘 뒤 첫 관측 pixels를 dataset
@@ -78,6 +78,8 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
         (obstacle은 action과 무관하게 움직이므로 후보 action과 상관없이 정확하다). iawm.cfjepa_gate.CFJEPA.rollout이 읽는다.
     plan_log (E40): env step마다 [agent 위치, target 위치, contact]를 기록하고, 이번 호출에서 새로 계획할 env와
         그 시점의 step 번호를 남긴다(wrap_solver_count_and_gate가 계획의 예측과 묶는다).
+    motion (E50): history frame마다 1 env step 전 frame을 info['pixels_prev']로 넣는다. 첫 계획에서도 있도록 시작 전 frame을
+        하나 더 render_past로 만든다(그 action도 0). iawm.cfjepa_gate.CFJEPA.rollout이 encode해 forecaster feature를 만든다.
     """
     from iawm import obs_oracle as oo
 
@@ -103,13 +105,14 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
             pix = np.array(info_dict['pixels'], copy=True)  # (n, 1, H, W, C)
             n = pix.shape[0]
             pre = (history - 1) * frameskip
+            extra = 1 if motion else 0
             for i in range(n):
                 if not self.started[i]:
                     env = self._unwrapped(i)
                     if obs_fix:
                         pix[i, -1] = np.asarray(env.render())
                     if pre > 0:
-                        for k in range(pre, 0, -1):
+                        for k in range(pre + extra, 0, -1):
                             self.frames[i].append(np.asarray(env.render_past(k)))
                             if oracle_horizon > 0:
                                 self.obs_states[i].append(oo.past_state(env, k))
@@ -143,6 +146,10 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
                         a = self.process['action'].transform(a)
                     acts.append(a.reshape(history - 1, -1))  # (h-1, fs*A), 학습 data와 같은 순서
                 info_dict['hist_action'] = np.stack(acts).astype(np.float32)
+                if motion:
+                    info_dict['pixels_prev'] = np.stack(
+                        [np.stack([self.frames[i][j - 1] for j in idx]) for i in range(n)]
+                    )
                 if oracle_horizon > 0:
                     info_dict['obs_oracle'] = np.stack([
                         oo.plan_oracle([self.obs_states[i][j] for j in idx], self._unwrapped(i), oracle_horizon, frameskip)
@@ -153,7 +160,8 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
                 print('[history policy] pixels', info_dict['pixels'].shape,
                       'hist_action', getattr(info_dict.get('hist_action'), 'shape', None),
                       'frames/env', len(self.frames[0]), 'obs_fix', obs_fix,
-                      'obs_oracle', getattr(info_dict.get('obs_oracle'), 'shape', None), flush=True)
+                      'obs_oracle', getattr(info_dict.get('obs_oracle'), 'shape', None),
+                      'pixels_prev', getattr(info_dict.get('pixels_prev'), 'shape', None), flush=True)
             action = super().get_action(info_dict, **kwargs)
             for i in range(n):
                 a = np.asarray(action[i], dtype=np.float32)
@@ -404,12 +412,17 @@ def run(cfg: DictConfig):
         if (getattr(pr, "int_oracle_key", "") == "forecast" and getattr(pr, "forecaster", None) is not None
                 and getattr(pr, "gate_mode", "off") != "off"):  # E45: forecaster는 history frame이 모델 history 길이만큼 있어야 한다
             assert plan_history == pr.num_frames, "forecast 입력 모델은 +plan_history가 모델 history 길이와 같아야 한다"
-            print(f"[plan forecast] forecaster dim {pr.forecaster.dim} history {pr.forecaster.history}", flush=True)
+            print(f"[plan forecast] forecaster dim {pr.forecaster.dim} history {pr.forecaster.history} "
+                  f"motion {getattr(pr.forecaster, 'motion', False)}", flush=True)
+        motion = bool(getattr(getattr(pr, "forecaster", None), "motion", False)) and getattr(pr, "gate_mode", "off") != "off"
+        if motion:  # E50: 1 step 전 frame도 pixels와 같은 전처리를 거친다
+            assert plan_history > 1, "motion 입력 모델은 +plan_history가 필요하다"
+            transform["pixels_prev"] = img_transform(cfg)
         if plan_history > 1 or obs_fix or plan_log:  # E26: 첫 관측을 실제 env 화면으로, planning에 과거 frame 넣기
             policy_cls = make_history_policy(
                 policy_cls, plan_history, cfg.plan_config.action_block, obs_fix,
                 oracle_horizon=cfg.plan_config.horizon if plan_oracle else 0, plan_log=plan_log,
-                clip_history=bool(cfg.get("action_clip", False)),
+                clip_history=bool(cfg.get("action_clip", False)), motion=motion,
             )
         replan = str(cfg.get("replan", "none"))
         if replan in ("gate", "random"):  # E37: gate α가 tau를 넘는 block까지만 실행하고 다시 계획

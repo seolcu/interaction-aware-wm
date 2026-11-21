@@ -18,8 +18,8 @@ import numpy as np
 import torch
 
 
-def F_dim(pr, D, anc, n_tag):
-    return D * (2 if anc is not None else 1) + n_tag
+def F_dim(pr, D, anc, n_tag, mot=None):
+    return D * (2 if anc is not None else 1) + (D if mot is not None else 0) + n_tag
 
 
 def main():
@@ -36,7 +36,7 @@ def main():
     from analyze_gate import to_model_pixels
     from iawm.cfjepa import history_get_cost
     from iawm.forecaster import N_TAGS
-    from train_int_frozen import FC_TRUNC, FS, anchor_columns, forecast_columns, load_rows
+    from train_int_frozen import FC_TRUNC, FS, anchor_columns, forecast_columns, load_rows, motion_columns
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     home = Path(swm.data.utils.get_cache_dir())
@@ -46,13 +46,14 @@ def main():
     rows, off, ep_len = load_rows(m, home / 'datasets' / args.data, device, None, 'forecast')
     cols = forecast_columns(pr.forecaster, rows)
     anc = anchor_columns(rows) if pr.forecaster.anchor else None  # E46: 마지막 실제 frame도 같은 index로 비교한다
+    mot = motion_columns(rows) if getattr(pr.forecaster, 'motion', False) else None  # E50: 1 env step 차이
     D = pr.forecaster.dim
     H, S, n_steps = pr.num_frames, 4, 4
     T = H + n_steps
     A = m.action_encoder.input_dim
-    worst, worst_anc, tag_bad = 0.0, 0.0, 0
+    worst, worst_anc, worst_mot, tag_bad = 0.0, 0.0, 0.0, 0
     n_tag = N_TAGS if pr.forecaster.depth_tag else 0
-    assert F_dim(pr, D, anc, n_tag) == pr.int_oracle_dim, (pr.int_oracle_dim, D, n_tag)
+    assert F_dim(pr, D, anc, n_tag, mot) == pr.int_oracle_dim, (pr.int_oracle_dim, D, n_tag)
     with h5py.File(home / 'datasets' / args.data, 'r') as f:
         eps = [e for e in range(len(ep_len)) if ep_len[e] > FS * (H + n_steps + 2)][:args.episodes]
         for e in eps:
@@ -64,6 +65,9 @@ def main():
                     'goal': goal[:, None].expand(1, S, *goal.shape[1:]).clone(),
                     'hist_action': torch.zeros(1, S, H - 1, A, device=device),
                     'action': torch.zeros(1, S, H, A, device=device)}  # policy가 넣는 key (get_cost가 goal에서 뺀다)
+            if mot is not None:  # E50: history frame마다 1 env step 전 frame (eval.py HistoryPolicy와 같다)
+                pp = to_model_pixels(f['pixels'][[h - 1 for h in hist]][None], device)
+                info['pixels_prev'] = pp[:, None].expand(1, S, *pp.shape[1:]).clone()
             cand = torch.randn(1, S, T - (H - 1), A, device=device)
             with torch.no_grad():
                 cost_on = history_get_cost(m, info, cand)
@@ -77,8 +81,11 @@ def main():
                     c, row = d - 1, r0 + FS * (d - 1)
                 worst = max(worst, (F[i, :D].float() - cols[c, row].float()).abs().max().item())
                 if anc is not None:
-                    assert F.shape[-1] == 2 * D + n_tag, F.shape
+                    assert F.shape[-1] == F_dim(pr, D, anc, n_tag, mot), F.shape
                     worst_anc = max(worst_anc, (F[i, D:2 * D].float() - anc[c, row].float()).abs().max().item())
+                if mot is not None:
+                    o = D * (2 if anc is not None else 1)
+                    worst_mot = max(worst_mot, (F[i, o:o + D].float() - mot[c, row].float()).abs().max().item())
                 if n_tag:  # E47: planning의 depth one-hot이 학습 column index c와 같아야 한다
                     tag = F[i, -n_tag:].float()
                     tag_bad += int(tag.argmax().item() != c or tag.sum().item() != 1)
@@ -92,8 +99,8 @@ def main():
                 pr.gate_mode = mode
             print(f'episode {e}: cost on {cost_on[0].tolist()} off {cost_off[0].tolist()}', flush=True)
     scale = cols.float().abs().max().item()
-    ok = worst < 1e-2 * max(1.0, scale) and worst_anc < 1e-2 * max(1.0, scale) and tag_bad == 0  # float16 반올림 오차보다 크면 정의가 어긋난 것이다
-    print(f"FORECAST CHECK {'OK' if ok else 'BAD'}: max |plan - column| {worst:.2e} anchor {worst_anc:.2e} tag mismatches {tag_bad} (column max abs {scale:.3f}), "
+    ok = worst < 1e-2 * max(1.0, scale) and worst_anc < 1e-2 * max(1.0, scale) and worst_mot < 1e-2 * max(1.0, scale) and tag_bad == 0  # float16 반올림 오차보다 크면 정의가 어긋난 것이다
+    print(f"FORECAST CHECK {'OK' if ok else 'BAD'}: max |plan - column| {worst:.2e} anchor {worst_anc:.2e} motion {worst_mot:.2e} tag mismatches {tag_bad} (column max abs {scale:.3f}), "
           f"features {tuple(info['forecast'].shape)}", flush=True)
     sys.exit(0 if ok else 1)
 

@@ -2241,3 +2241,40 @@ planning (success rate %, r2b, 범위 제한 + 위치 cost, seed 42~57 paired, L
 **비용 상한:** L4 세션 1개, 기한 10시간, 20 CU. 예상 시간은 수집 약 2시간, fine-tune 약 1.5시간, probe와 학습 약 2시간, planning 2조건 × 16 seed 약 1.5시간이다. 합계 약 7시간, 14 CU다. 11/21에 하루 한도를 45 CU로 올렸다(발표 전까지).
 
 **실행 상태:** 사전 등록.
+
+## 2026-11-21 · E50. 1 env step 차이로 obstacle 속도 단서를 h_int에 넣기 (obstacle 2개, label 없음, base 고정)
+
+**목적:** E47~E49에서 label 없는 h_int 입력은 contact z^c 오차를 15% 넘게 줄이지 못했고(정답 입력 60%), 첫 계획 시점(`PLAN0`)은 1~3%였다. E45 진단에서 정답 입력의 이득은 obstacle 속도에서 나온다(위치만 5.8%, 위치+속도 73.3%). block 간격(5 step) frame에서는 obstacle 2개가 15~90px씩 움직여 대응이 모호하다. 1 env step 사이에는 3~18px만 움직이므로, 마지막 실제 frame과 그 1 step 전 frame의 latent 차이는 label 없이 속도 단서를 준다. 이 값은 첫 계획 시점에도 실제 값이다.
+
+**구현**
+- `Forecaster(motion=True)`: `plan_features`가 frame i의 feature 뒤에 `hist[a] - prev[a]`(a = min(i, H-1))를 붙인다. `prev`는 history frame마다 1 env step 전 frame의 latent다.
+- `scripts/train_int_frozen.py --fc-motion`: anchor와 같은 column index의 `z[a] - z[a-1]`(`motion_columns`)을 붙인다. episode 첫 frame은 `z[a+1] - z[a]`를 쓴다. 검증 data의 첫 계획 시점 수치(`RESULT_VAL_PLAN0`)를 새로 남긴다.
+- `scripts/eval.py`: motion 모델이면 HistoryPolicy가 history frame마다 1 step 전 frame을 `info['pixels_prev']`로 넣는다(첫 계획에도 있도록 시작 전 frame을 하나 더 `render_past`로 만든다). `pixels`와 같은 전처리를 거치고, `CFJEPA.rollout`이 encode한다.
+- `scripts/colab/check_forecast.py`: planning feature의 1 step 차이가 학습 column과 같은지도 확인한다. 로컬에서 임의 data로 세 부분(예측, 실제 frame, 1 step 차이)이 모두 학습 column과 같음을 확인했다.
+
+**설정:** base `e47_cf`, 위치 probe `pos_probe_e47_cf.pt`, data와 h_int 크기는 E49와 같다.
+
+| 이름 | h_int 추가 입력 | 역할 |
+|---|---|---|
+| `e50_fm` | 마지막 실제 frame + 1 step 차이 (384) | 제안 1 |
+| `e50_fxm` | cross-fit 예측 + 마지막 실제 frame + 1 step 차이 (576) | 제안 2 (E49 `e49_fxa` + 1 step 차이) |
+| `e50_fc0` | 마지막 실제 frame (192) | 대조군 |
+| `e50_obs` | 정답 obstacle × 2개 (12) | 상한 |
+
+**판정 (실행 전에 정함)**
+- **판정 1:** 제안 모델의 검증 깊은 구간(`RESULT_VAL_DEEP`)과 검증 첫 계획 시점(`RESULT_VAL_PLAN0`) contact 오차 감소율이 **모두** `e50_fc0`보다 5%p 이상 높아야 한다. 통과한 제안 중 깊은 구간이 높은 쪽을 planning의 제안(`prop`)으로 쓴다(`decide.py gate`). 없으면 planning 없이 끝낸다. test는 보지 않는다.
+- planning 조건과 통과 기준은 E49와 같다. 비교 4개는 `e47_cf`, `prop`, `e50_fc0`, `e50_obs`다.
+  - **Q0** `e50_obs` − `e47_cf`가 +3%p 이상이고 표준오차의 2배 이상.
+  - **Q1** `prop` − `e47_cf`가 +3%p 이상이고 표준오차의 2배 이상.
+  - **Q2** `prop` − `e50_fc0`가 0보다 크고 표준오차의 2배 이상.
+- 해석 계획
+  - 판정 1 미달: 1 step 차이만으로는 h_int가 속도를 쓰지 못한다. 다음은 속도만 따로 예측하는 작은 module이거나, 한계로 정리한다.
+  - 판정 1 통과, Q1 미달: 예측 개선이 planning으로 이어지지 않는다. plan log로 원인을 본다.
+  - Q1, Q2 통과: label 없는 제안이 CF-JEPA를 이긴 첫 결과다. seed를 늘리거나 obstacle 3개(E51 base)에서 확인한다.
+
+**운영:** E49 pipeline을 고쳐 `outputs/e50/`에 둔다(git 제외). smoke test는 두 제안 모델을 작은 data로 학습하고, `check_forecast.py`로 학습·planning feature 일치를 확인하고, planning이 feature `(.*, 7, 576)`, `(.*, 7, 384)`를 받는지 본다. E51과 다른 L4 세션에서 동시에 돌린다.
+- 실행: `systemd-run --user --unit=e50-run --collect --setenv=HOURS=9 bash "$PWD/outputs/e50/launch.sh"`
+
+**비용 상한:** L4 세션 1개, 기한 9시간, 18 CU. 예상은 E49와 같다(판정 1에서 멈추면 약 4시간 15분 8 CU, planning까지 약 6시간 30분 12.5 CU).
+
+**실행 상태:** 사전 등록.

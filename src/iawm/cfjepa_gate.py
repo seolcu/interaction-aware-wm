@@ -222,10 +222,16 @@ class CFJEPA(LeWM):
             # 같은 값을 쓰고, 같은 계획의 CEM 반복 동안 info에 남겨 다시 쓴다(LeWM.rollout의 'emb' cache와 같다).
             B, S, T = action_sequence.shape[:3]
             if 'emb' not in info:  # LeWM.rollout과 같은 방법으로 history를 encoding해 둔다(rollout이 그대로 다시 쓴다)
-                _init = {k: v[:, 0] for k, v in info.items() if torch.is_tensor(v) and k != 'action'}
+                _init = {k: v[:, 0] for k, v in info.items() if torch.is_tensor(v) and k not in ('action', 'pixels_prev')}
                 _init = self.encode(_init)
                 info['emb'] = _init['emb'].detach().unsqueeze(1).expand(B, S, -1, -1)
-            feat = pred.forecaster.plan_features(info['emb'][:, 0].float(), T)  # frame 0 .. H + n_steps - 1 (T = H + n_steps)
+            prev = None
+            if getattr(pred.forecaster, 'motion', False):  # E50: history frame마다 1 env step 전 frame (eval.py HistoryPolicy가 넣는다)
+                assert 'pixels_prev' in info, 'motion 입력 모델은 info에 pixels_prev가 있어야 한다 (+plan_history와 HistoryPolicy)'
+                pp = info['pixels_prev']
+                pp = pp[:, 0] if pp.dim() == info['pixels'].dim() else pp
+                prev = self.encode({'pixels': pp})['emb'].detach().float()
+            feat = pred.forecaster.plan_features(info['emb'][:, 0].float(), T, prev)  # frame 0 .. H + n_steps - 1 (T = H + n_steps)
             info['forecast'] = feat[:, None].expand(B, S, -1, -1)
             if not getattr(pred, '_fc_logged', False):  # smoke test가 확인하는 줄 (한 번만)
                 pred._fc_logged = True

@@ -53,12 +53,17 @@ class Forecaster(nn.Module):
     학습한 forecaster(11%)보다 나았다. 실제 frame은 굴린 예측과 달리 흐려지지 않으므로, 둘을 같이 주면 가까운 곳은
     예측이, 먼 곳은 실제 frame과의 차이가 맡을 수 있다. anchor는 parameter가 없고, 학습하지 않은 forecaster의 출력과
     정확히 같은 값이다(scripts/train_int_frozen.py anchor_columns).
+
+    motion=True (E50): 그 다음에 "마지막 실제 frame과 그 1 env step 전 frame의 latent 차이"를 붙인다(+dim).
+    block 간격(frameskip) frame에서는 obstacle 2개가 15~90px씩 움직여 대응이 모호하지만, 1 step 사이에는 3~18px만
+    움직이므로 속도 단서가 분명하다. planning에서는 history frame마다 1 step 전 frame의 latent(prev)를 받아야 한다.
+    parameter는 없다(scripts/train_int_frozen.py motion_columns).
     """
 
     def __init__(self, dim: int = 192, history: int = 3, hidden: int = 1024, depth: int = 3, anchor: bool = False,
-                 depth_tag: bool = False):
+                 depth_tag: bool = False, motion: bool = False):
         super().__init__()
-        self.dim, self.history, self.anchor, self.depth_tag = dim, history, anchor, depth_tag
+        self.dim, self.history, self.anchor, self.depth_tag, self.motion = dim, history, anchor, depth_tag, motion
         in_dim = dim * (history + 1)
         layers: list[nn.Module] = [nn.LayerNorm(in_dim), nn.Linear(in_dim, hidden), nn.GELU()]
         for _ in range(depth - 1):
@@ -91,15 +96,18 @@ class Forecaster(nn.Module):
         return torch.stack(out, dim=1)
 
     @torch.no_grad()
-    def plan_features(self, hist: torch.Tensor, n_frames: int) -> torch.Tensor:
+    def plan_features(self, hist: torch.Tensor, n_frames: int, prev: torch.Tensor | None = None) -> torch.Tensor:
         """planning용 feature. hist (B, H, dim) 실제 history latent. 반환 (B, n_frames, dim) (anchor면 2·dim, depth_tag면 + N_TAGS).
 
         feature[i] = frame i까지(history 밖이면 forecaster가 굴린 frame) 보고 예측한 frame i+1.
         history보다 앞의 frame이 필요하면 첫 frame을 반복한다(학습 column과 같다).
         anchor[i] = frame i까지 본 마지막 실제 frame = hist[min(i, H - 1)].
+        motion[i] = hist[a] - prev[a], a = min(i, H - 1) (motion일 때. prev (B, H, dim)는 history frame마다 1 env step 전 frame).
         tag[i] = one-hot(tag_index(i, H)) (depth_tag일 때, 학습 column의 index와 같다).
         """
         H = hist.size(1)
+        assert not self.motion or (prev is not None and prev.shape == hist.shape), 'motion이면 prev가 hist와 같은 모양이어야 한다'
+
         assert not self.depth_tag or H == self.history, (H, self.history)
         track = list(hist.unbind(1))
         feats = []
@@ -107,6 +115,9 @@ class Forecaster(nn.Module):
             idx = [max(0, i - k) for k in range(self.history - 1, -1, -1)]
             f = self.step(torch.stack([track[j] for j in idx], dim=1))
             parts = [f] + ([hist[:, min(i, H - 1)].to(f.dtype)] if self.anchor else [])
+            if self.motion:
+                a = min(i, H - 1)
+                parts.append((hist[:, a] - prev[:, a]).to(f.dtype))
             if self.depth_tag:
                 tag = f.new_zeros(f.size(0), N_TAGS)
                 tag[:, tag_index(i, H)] = 1

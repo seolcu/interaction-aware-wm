@@ -24,6 +24,8 @@ E35와 다른 것:
   --fc-anchor (E46): forecaster 예측 뒤에 "마지막 실제 frame" latent(anchor_columns)를 이어 붙여 입력을 2배로 한다.
   --fc-data (E48): forecaster를 h_int 학습 data(--data)가 아닌 따로 수집한 data로 학습한다(cross-fit). 같은 data로 학습하면
   h_int가 학습 때 받는 forecaster 예측이 처음 보는 data에서보다 정확해져 그 입력을 과하게 믿을 수 있다(E47의 가설).
+  --fc-motion (E50): 마지막 실제 frame과 그 1 env step 전 frame의 latent 차이(motion_columns)를 이어 붙인다. block 간격
+  frame으로는 obstacle 2개의 대응이 모호해 속도를 알기 어렵다. 1 step 차이는 label 없이 속도 단서를 준다.
   --fc-depth-tag (E47): 맨 뒤에 그 feature의 column(depth) one-hot(iawm.forecaster.N_TAGS)을 붙인다. planning에서는
   Forecaster.plan_features가 같은 index(tag_index)를 붙인다.
 - 검증: data의 마지막 --val-episodes episode는 학습에 쓰지 않고, epoch마다 contact / non-contact z^c 오차를 잰다.
@@ -78,10 +80,11 @@ def gate_config(base_cfg: dict, args) -> dict:
         p.update(int_oracle_dim=OBS_PARTS[args.oracle_parts] * args.num_obstacles, int_oracle_key='obs_oracle')
     if args.oracle == 'forecast':
         d = p['dim_c'] + p['dim_u']
-        p.update(int_oracle_dim=d * (2 if args.fc_anchor else 1) + (N_TAGS if args.fc_depth_tag else 0),
+        p.update(int_oracle_dim=d * (2 if args.fc_anchor else 1) + (d if args.fc_motion else 0) + (N_TAGS if args.fc_depth_tag else 0),
                  int_oracle_key='forecast',
                  forecaster_cfg={'dim': d, 'history': HIST, 'hidden': args.fc_hidden, 'depth': args.fc_depth,
-                                 'anchor': bool(args.fc_anchor), 'depth_tag': bool(args.fc_depth_tag)})
+                                 'anchor': bool(args.fc_anchor), 'depth_tag': bool(args.fc_depth_tag),
+                                 'motion': bool(args.fc_motion)})
     cfg.update(int_aux_weight=args.int_aux_weight, gate_bce_weight=1.0, int_lr=args.lr)
     return cfg
 
@@ -252,6 +255,29 @@ def anchor_columns(rows):
 
 
 @torch.no_grad()
+def motion_columns(rows):
+    """anchor_columns와 같은 index의 "마지막 실제 frame - 그 1 env step 전 frame" latent 차이 (E50). 반환 (FC_DEPTH + 2, N, D) float16.
+
+    anchor row a마다 z[a] - z[a - 1]이다. episode 첫 frame이면 앞 frame이 없으므로 z[a + 1] - z[a]를 쓴다.
+    planning에서는 history frame마다 1 step 전 frame(첫 계획이면 env.render_past)의 latent와의 차이다(iawm.forecaster).
+    """
+    z, row_off = rows['z'], rows['row_off']
+    n = z.shape[0]
+    r = torch.arange(n, device=z.device)
+    first = r == row_off
+    nxt = torch.clamp(r + 1, max=n - 1)
+    dz = torch.where(first[:, None], z[nxt] - z, z - z[torch.clamp(r - 1, min=0)]).half()   # (N, D): row r의 1 step 차이
+    back = (r - row_off) // FS
+    out = torch.empty(FC_DEPTH + 2, n, z.shape[1], dtype=torch.float16, device=z.device)
+    for depth in range(1, FC_DEPTH + 1):
+        de = torch.clamp(back + 1, max=depth)
+        out[depth - 1] = dz[r - FS * (de - 1)]
+    out[FC_TRUNC[0]] = dz
+    out[FC_TRUNC[1]] = dz
+    return out
+
+
+@torch.no_grad()
 def forecaster_px(fc, rows, off, ep_len, tr_eps, te_eps, device, d_c, ks=(1, 3, 5), n_fit=150000, steps=4000):
     """진단: 미래 obstacle 위치(px)를 얼마나 꺼낼 수 있는가. 위치 label은 이 진단에만 쓴다(모델 학습에는 쓰지 않는다).
 
@@ -335,6 +361,8 @@ def forward(model, rows, s, call=None):
         pr.oracle = rows['fc'][col, fr[:, :HIST]].float()
         if 'anc' in rows:  # E46: 마지막 실제 frame을 이어 붙인다 (같은 column index)
             pr.oracle = torch.cat([pr.oracle, rows['anc'][col, fr[:, :HIST]].float()], dim=-1)
+        if 'mot' in rows:  # E50: 1 env step 차이를 이어 붙인다 (같은 column index)
+            pr.oracle = torch.cat([pr.oracle, rows['mot'][col, fr[:, :HIST]].float()], dim=-1)
         if pr.forecaster is not None and pr.forecaster.depth_tag:  # E47: column index one-hot
             pr.oracle = torch.cat([pr.oracle, torch.nn.functional.one_hot(col, N_TAGS).float()], dim=-1)
     pred = model.predict(emb[:, :HIST], act_emb[:, :HIST])
@@ -392,6 +420,7 @@ def main():
     ap.add_argument('--fc-depth', type=int, default=3)
     ap.add_argument('--fc-anchor', action='store_true', help='E46: forecaster 예측과 마지막 실제 frame을 함께 넣는다')
     ap.add_argument('--fc-depth-tag', action='store_true', help='E47: forecaster feature에 depth one-hot을 붙인다')
+    ap.add_argument('--fc-motion', action='store_true', help='E50: 마지막 실제 frame의 1 env step 차이를 붙인다')
     ap.add_argument('--fc-data', default=None, help='E48: forecaster 학습 data (기본: --data의 학습 episode, 같은 data)')
     ap.add_argument('--num-obstacles', type=int, default=1)
     ap.add_argument('--int-input', default='resolve', choices=['state', 'resolve'])
@@ -434,7 +463,7 @@ def main():
     model = model.to(device).eval()
     pr, d_c = model.predictor, model.dim_c
     print(f'base={args.base} loaded {len(sd)} tensors, new={len(missing)}, trainable={n_train / 1e6:.3f}M '
-          f'oracle={args.oracle} parts={args.oracle_parts} anchor={args.fc_anchor} depth_tag={args.fc_depth_tag} int_input={args.int_input} depth={args.int_depth} '
+          f'oracle={args.oracle} parts={args.oracle_parts} anchor={args.fc_anchor} motion={args.fc_motion} depth_tag={args.fc_depth_tag} int_input={args.int_input} depth={args.int_depth} '
           f'hidden={args.int_hidden_dim}', flush=True)
 
     cache_dir = Path(args.cache_dir) if args.cache_dir else home / 'latent_cache'
@@ -450,6 +479,8 @@ def main():
             r['fc'] = forecast_columns(fc, r)
             if fc.anchor:
                 r['anc'] = anchor_columns(r)
+            if fc.motion:
+                r['mot'] = motion_columns(r)
         return r, o, l
 
     rows, off, ep_len = rows_of(args.data)
@@ -479,6 +510,8 @@ def main():
         rows['fc'] = forecast_columns(fc, rows)
         if fc.anchor:
             rows['anc'] = anchor_columns(rows)
+        if fc.motion:
+            rows['mot'] = motion_columns(rows)
         fc_ready[0] = True
         fc_gap = forecast_gap(rows, off, ep_len, range(0, n_ep - n_val), range(n_ep - n_val, n_ep))
         print(f"forecast columns {tuple(rows['fc'].shape)} ({rows['fc'].numel() * 2 / 1e9:.2f} GB)", flush=True)
@@ -545,6 +578,10 @@ def main():
         result['val_deep'] = mvd
         print(f"RESULT_VAL_DEEP {args.out} contact_red_learned {mvd['c_red_learned']:.4f} "
               f"contact_red_on {mvd['c_red_on']:.4f} noncontact_red_learned {mvd['nc_red_learned']:.4f}", flush=True)
+        mv0 = evaluate(model, rows, va_starts, d_c, call=0)  # E50: 검증 data의 첫 계획 시점(planning t = 0)
+        result['val_plan0'] = mv0
+        print(f"RESULT_VAL_PLAN0 {args.out} contact_red_learned {mv0['c_red_learned']:.4f} "
+              f"contact_red_on {mv0['c_red_on']:.4f} noncontact_red_learned {mv0['nc_red_learned']:.4f}", flush=True)
     if fc_gap is not None:
         print('RESULT_FCGAP ' + args.out + ' ' + ' '.join(f'd{d} {a:.4f} {b:.4f}' for d, a, b in fc_gap), flush=True)
     if fc_px is not None:
