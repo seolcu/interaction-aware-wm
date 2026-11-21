@@ -2219,3 +2219,25 @@ planning (success rate %, r2b, 범위 제한 + 위치 cost, seed 42~57 paired, L
 **운영:** `TRAIN DONE` 저장에서 원격 묶기가 10분 안에 끝나지 않아 한 번 실패했고, 다음 주기에 받았다. 감시가 결과를 받은 뒤 세션을 끄고 꺼진 것을 확인했다.
 
 **결과물:** 로컬 `outputs/e49/res/final/`(git 제외), Proton Drive `results/E49_crossfit_anchor/`.
+
+## 2026-11-21 · E51. obstacle 3개 조건에서 정답 obstacle 입력의 planning 이득 (base fine-tune 후 고정)
+
+**목적:** E47~E49에서 정답 obstacle 입력 모델의 CF-JEPA 대비 planning 이득은 obstacle 1개(r1x)에서 +3~6%p, obstacle 2개(r2b)에서 +10~12%p였다. obstacle 3개(r3b)에서도 이득이 커지는지 확인한다. 발표 피드백의 "obstacle이 많아질 때"에 대한 세 번째 점이다. 정답 simulator 기준 r3b의 interaction 이득은 +35%p다(E28).
+
+**설정**
+- data(모두 obstacle 3개, 반지름 22): `r3b`(fine-tune과 위치 probe, 1만 episode, seed 5353), `r3y`(h_int 학습, 1만, seed 4343), `r3yt`(test 1,500, seed 778), `collision_tworoom`(planning 시작 상태, 같은 seed), `r3dbg`(smoke 200, seed 21).
+- base `e51_cf`: E47의 `e47_cf`(obstacle 2개)에서 시작해 `r3b`로 3 epoch fine-tune한다. 위치 probe `pos_probe_e51_cf.pt`는 `r3b`로 학습한다.
+- `e51_obs`: base 고정, h_int에 정답 obstacle [위치, 속도, 다음 위치] × 3개(18)를 넣는다. 크기와 학습은 E47과 같다.
+- planning: `world.num_obstacles=3 +world.obstacle_radius=22.0`, P2 + `+action_clip=true` + `+cost=agent_px +pos_probe=pos_probe_e51_cf.pt`, `+plan_log`. L4 한 세션에서 seed 42~57(16개)을 짝짓는다.
+
+**판정 (실행 전에 정함):** **Q0** `e51_obs` − `e51_cf`가 +3%p 이상이고 표준오차의 2배 이상. 참고로 E47·E49의 obstacle 2개 값(+11.9, +10.0)보다 큰지 본다. 세션이 다르므로 크기 비교는 참고로만 쓴다.
+- 통과하고 2개보다 크면: obstacle이 늘수록 interaction 정보의 이득이 커진다는 결과가 세 점으로 확인된다.
+- 통과했지만 2개 이하면: 이득은 있지만 obstacle 수에 비례하지 않는다. 3개에서는 정답 입력 h_int도 push 예측이 어려워졌는지 contact 오차 감소율로 확인한다.
+- 미달이면: 3개에서는 정답 입력으로도 planning 이득을 못 낸다. 원인(예측, planning)을 plan log로 나눠 본다.
+
+**운영:** E47 pipeline을 고쳐 `outputs/e51/`에 둔다(git 제외). E50과 다른 L4 세션에서 동시에 돌린다.
+- 실행: `systemd-run --user --unit=e51-run --collect --setenv=HOURS=10 bash "$PWD/outputs/e51/launch.sh"`
+
+**비용 상한:** L4 세션 1개, 기한 10시간, 20 CU. 예상 시간은 수집 약 2시간, fine-tune 약 1.5시간, probe와 학습 약 2시간, planning 2조건 × 16 seed 약 1.5시간이다. 합계 약 7시간, 14 CU다. 11/21에 하루 한도를 45 CU로 올렸다(발표 전까지).
+
+**실행 상태:** 사전 등록.
