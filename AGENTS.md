@@ -125,7 +125,7 @@ This file provides guidance to AI agents when working with code in this reposito
 - CF-JEPA가 distractor를 stable-worldmodel에 어떻게 넣었는지(코드 미공개)
 - Iso-Dream++의 학술지 게재본(TPAMI 등) 여부
 
-## 지금까지의 핵심 결과 (11/20, E48까지)
+## 지금까지의 핵심 결과 (11/21, E49까지)
 
 자세한 수치와 설정은 `docs/experiments.md`에 있다. 같은 실험을 반복하기 전에 해당 E 번호를 먼저 읽는다.
 
@@ -145,6 +145,7 @@ This file provides guidance to AI agents when working with code in this reposito
 - **실제 frame을 함께 넣기 (E46):** forecaster 예측과 마지막 실제 frame을 함께 h_int에 넣어도 깊은 구간(depth 3~5) contact 이득이 11.5%로 예측만 넣은 것(11.1%)과 같았다. 실제 frame만 넣은 대조군(22.0%)보다 낮아 판정 1에서 멈췄다(planning 미실행). h_int는 forecaster 예측에 맞춰지고 실제 frame을 속도 단서로 쓰지 못했다. E45의 두 모델은 같은 seed에서 소수 넷째 자리까지 재현됐다. pipeline은 로컬 `outputs/e46/`(11/19 재작성, 사본은 Proton Drive `results/E46_forecast_anchor/pipeline/`)에 있다.
 - **obstacle 2개 (E47):** `e32_cf`를 obstacle 2개(r2b, 반지름 22) data로 3 epoch fine-tune한 `e47_cf`를 base로 쓴다(로컬 `outputs/e47/res/base/`, Proton Drive `results/E47_two_obstacles/`). 정답 obstacle 입력 모델이 CF-JEPA를 **+11.9 ± 1.7%p(89.4 대 77.5, 16 seed 모두 승)** 이겼다. obstacle 1개의 +3~6%p보다 크다. obstacle이 늘수록 interaction 정보의 planning 이득이 커진다는 결과이고, 발표 피드백 질문에 대한 답이다. label 없는 forecaster 입력은 depth 1 이득이 12.6%로 약하고 깊은 구간에서는 예측을 나쁘게 만들어(−15%) planning이 CF-JEPA보다 −1.6%p였다. depth one-hot은 효과가 없었다. 유력한 원인(미검증)은 forecaster와 h_int를 같은 data로 학습해서, 학습 때 받은 forecaster 예측이 처음 보는 data에서보다 정확하다는 점이다.
 - **cross-fit forecaster (E48):** E47 가설이 맞았다. h_int와 같은 data로 학습한 forecaster는 h_int 학습 episode에서 5 step 뒤 예측이 처음 보는 episode보다 6배 정확했다(latent 오차 0.13 대 0.77). 그래서 h_int가 그 입력을 과하게 믿었다. forecaster를 따로 모은 `r2f`로 학습하면(`--fc-data`) 깊은 구간 contact 이득이 −13.5%에서 +9.8%(검증)로 바뀐다. 그래도 마지막 실제 frame만 넣은 대조군(11.4%)보다 낮아 planning은 하지 않았다. forecaster 예측과 h_int 입력을 다룰 때는 반드시 cross-fit한다. 같은 seed로 다시 모은 data와 학습은 E47 수치를 소수 넷째 자리까지 재현했다.
+- **cross-fit 예측 + 실제 frame (E49):** cross-fit이면 h_int가 forecaster 예측과 마지막 실제 frame을 함께 쓴다(검증 깊은 구간 14.0%, 각각 9.8%, 11.4%). 그래도 planning은 CF-JEPA보다 −1.4 ± 1.9%p, 대조군보다 −2.3 ± 1.7%p였다. 정답 입력은 +10.0 ± 1.8%p(13승 0패)로 E47을 재현했다. label 없는 입력의 contact 이득은 15%를 넘지 않고(정답 60%), 첫 계획 시점 예측(`PLAN0`)은 1~3%만 고친다. 부족한 것은 obstacle 속도다(E45 진단). block 간격 frame에서는 obstacle 2개의 대응이 모호하다.
 - **분석 주의 (E40):** plan log에서 성공한 env는 위치가 멈춘 채 기록이 이어진다. 예측과 비교할 때 goal에 닿은 step 이후를 빼야 한다(`analyze_plan_log.py`에 반영).
 - **현재 목표 (11/16):** 최종 발표(11/26) 전에, 제안 방법이 Collision TwoRoom(r1x, P2)에서 CF-JEPA보다 planning 성공률이 공정 비교로 높다는 결과를 낸다. 다음 실험은 위 결과를 바탕으로 원인을 진단한 뒤 정한다. E42 이후의 질문은 "위치 label과 정답 obstacle 입력 없이도 이 이득이 남는가"다. 개선안마다 근거, 예상 비용, 대조군, 실패 판정 기준을 함께 제시한다.
 
