@@ -2521,3 +2521,22 @@ planning 성공률 (%, seed 42~57, 50 episode씩)
 **운영:** `TRAIN DONE` 저장에서 원격 split이 한 번 실패했고 다음 주기에 받았다.
 
 **결과물:** 로컬 `outputs/e53/res/`(git 제외), Proton Drive `results/E53_per_object_hint/`.
+
+## 2026-11-23 · E54. obstacle별 h_int 대 이어 붙인 입력을 새 seed 32개로 다시 재기 (obstacle 3개, base 고정)
+
+**목적:** E53에서 obstacle별 h_int(`po`)는 CF-JEPA 대비 +8.4%p, 이어 붙인 입력(`obs`) 대비 +2.4 ± 1.4%p였다. 두 모델의 차이는 표준오차 2배(2.74)에 조금 못 미쳤다. 같은 설정을 새 세션에서 겹치지 않는 seed 32개(58~89)로 재서 차이를 확정한다. E53의 표준오차로 보면 seed 32개에서 표준오차는 약 1.0이 되어, 차이가 +2.4%p로 유지되면 기준을 넘는다.
+
+**설정:** E53과 같다(base `e51_cf`, probe `pos_probe_e51_cf.pt`, data seed, `e54_obs`·`e54_po` 학습 설정). 학습은 E53과 같은 seed라 같은 weights가 나와야 한다(test 수치 0.4761, 0.5959로 확인한다). planning만 seed 58~89를 쓴다. E53 수치와 합치지 않는다(세션이 다르다).
+
+**판정 (실행 전에 정함)**
+- **Q2 (주 질문):** `e54_po` − `e54_obs`가 0보다 크고 표준오차의 2배 이상.
+- Q1: `e54_po` − `e51_cf`가 +3%p 이상이고 표준오차의 2배 이상. Q0: `e54_obs` − `e51_cf` 같은 기준.
+- 재현 확인: `e54_obs`, `e54_po`의 test contact 감소율이 E53과 소수 셋째 자리까지 같다. 다르면 이유를 먼저 찾는다.
+- 해석 계획: Q2 통과면 "obstacle별 module이 obstacle 3개에서 planning 이득을 키운다"를 결론으로 쓴다. 미달이면 예측 개선(+12%p)이 planning으로 2%p 남짓만 이어진다고 정리한다.
+
+**운영:** E53 pipeline(`outputs/e54/`, git 제외)에서 planning seed만 바꿨다. planning은 3조건 × 32 seed다.
+- 실행: `systemd-run --user --unit=e54-run --collect --setenv=HOURS=10 bash "$PWD/outputs/e54/launch.sh"`
+
+**비용 상한:** L4 세션 1개, 기한 10시간, 20 CU. 예상은 수집 약 1시간 40분, cache와 학습 약 1시간, planning 약 3시간 30분이다. 합계 약 6시간 30분, 13 CU다.
+
+**실행 상태:** 사전 등록.
