@@ -79,6 +79,9 @@ def gate_config(base_cfg: dict, args) -> dict:
              int_dim_head=32, int_mlp_dim=args.int_mlp_dim, int_scale=1.0, gate_hidden_dim=256, gate_init_bias=2.0)
     if args.oracle == 'obs':
         p.update(int_oracle_dim=OBS_PARTS[args.oracle_parts] * args.num_obstacles, int_oracle_key='obs_oracle')
+        if args.per_object:  # E53
+            assert args.oracle_parts == 'full'
+            p.update(int_per_object=args.num_obstacles)
     if args.oracle == 'forecast':
         d = p['dim_c'] + p['dim_u']
         p.update(int_oracle_dim=d * (2 if args.fc_anchor else 1) + (d if args.fc_motion else 0) + (N_TAGS if args.fc_depth_tag else 0),
@@ -421,6 +424,7 @@ def main():
     ap.add_argument('--out', required=True, help='출력 checkpoint 폴더 이름')
     ap.add_argument('--oracle', default='none', choices=['none', 'obs', 'forecast'])
     ap.add_argument('--oracle-noise', type=float, default=0.0, help='E52: obs 입력의 속도 오차 표준편차 (px/step). planning에는 +oracle_noise로 같은 값을 준다')
+    ap.add_argument('--per-object', action='store_true', help='E53: obstacle별로 같은 h_int를 돌려 보정을 더한다 (--oracle obs)')
     ap.add_argument('--oracle-parts', default='full', choices=list(OBS_PARTS), help='E45 진단: obs 입력 중 쓸 성분')
     ap.add_argument('--fc-steps', type=int, default=20000, help='forecaster 학습 step (0 = 학습하지 않은 대조군)')
     ap.add_argument('--fc-hidden', type=int, default=1024)
@@ -470,7 +474,7 @@ def main():
     model = model.to(device).eval()
     pr, d_c = model.predictor, model.dim_c
     print(f'base={args.base} loaded {len(sd)} tensors, new={len(missing)}, trainable={n_train / 1e6:.3f}M '
-          f'oracle={args.oracle} parts={args.oracle_parts} noise={args.oracle_noise} anchor={args.fc_anchor} motion={args.fc_motion} depth_tag={args.fc_depth_tag} int_input={args.int_input} depth={args.int_depth} '
+          f'oracle={args.oracle} parts={args.oracle_parts} noise={args.oracle_noise} per_object={args.per_object} anchor={args.fc_anchor} motion={args.fc_motion} depth_tag={args.fc_depth_tag} int_input={args.int_input} depth={args.int_depth} '
           f'hidden={args.int_hidden_dim}', flush=True)
 
     cache_dir = Path(args.cache_dir) if args.cache_dir else home / 'latent_cache'

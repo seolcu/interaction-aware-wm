@@ -2442,3 +2442,39 @@ seed별 성공률
 **그림:** `outputs/e52/fig/contact_vs_planning_gain.png`(git 제외, 만든 script `plot.py`와 함께 Proton Drive에 둔다). x축은 h_int의 contact 오차 감소율, y축은 CF-JEPA 대비 성공률 이득이고, E52의 σ 4점과 E50의 label 없는 입력 2점을 함께 그렸다.
 
 **결과물:** 로컬 `outputs/e52/res/final/`(git 제외), Proton Drive `results/E52_velocity_noise_curve/`.
+
+## 2026-11-23 · E53. obstacle별 h_int(weight 공유)로 obstacle 3개의 정답 입력 이득을 되찾기 (base 고정)
+
+**목적:** E51에서 obstacle 3개의 정답 입력 이득(+7.9%p)은 2개(+10~12%p)보다 작았고, h_int의 contact 오차 감소도 74 → 60 → 48%로 obstacle이 늘수록 줄었다. 지금 h_int는 obstacle K개의 상태를 한 vector(6K)로 이어 붙여 받는다. obstacle이 늘면 입력 차원과 조합이 커지고, 같은 obstacle이 몇 번째 자리에 오는지에 따라 다른 weight를 배워야 한다. obstacle마다 같은 h_int를 한 번씩 돌려 보정을 더하면(weight 공유, 순서·개수에 무관) 3개에서의 예측과 planning 이득이 회복되는지 잰다. 발표 피드백("obstacle이 많아질 때 object 간 다중 관계")에 대한 구조적 답이다. 정답 obstacle 입력을 쓰므로 상한 쪽 실험이다.
+
+**구현**
+- `InteractionGatedPredictor(int_per_object=K)`: 정답 입력 [pos (2K), vel (2K), pos_next (2K)]를 obstacle별 6차원으로 나눠 [z^c, z^u, g·h 예측, obstacle k]로 같은 h_int를 K번 돌리고 tanh 보정을 더한다. gate α는 scalar 하나 그대로다. h_int 크기와 parameter 수는 이어 붙인 모델과 거의 같다(입력층만 6K → 6).
+- `scripts/train_int_frozen.py --per-object`.
+- 로컬 단위 테스트: obstacle 순서를 바꿔도 출력이 같고(차이 6e-8), obstacle별로 직접 계산한 합과 같다(6e-8).
+
+**설정:** base `e51_cf`, 위치 probe `pos_probe_e51_cf.pt`(E51), data는 E51과 같은 seed로 다시 모은다(`r3y` 1만, `r3yt` 1,500, `collision_tworoom`, `r3dbg`). h_int 크기와 학습은 E51과 같다.
+
+| 이름 | h_int 입력 | 역할 |
+|---|---|---|
+| `e53_obs` | 정답 obstacle 3개를 이어 붙인 18차원 | 대조군 (E51 `e51_obs` 재현) |
+| `e53_po` | obstacle별 6차원, 같은 h_int를 3번 | 제안 |
+
+planning은 `e51_cf`, `e53_obs`, `e53_po`를 L4 한 세션에서 seed 42~57(16개)로 짝지어 잰다(3개 동시).
+
+**판정 (실행 전에 정함)**
+- **P1 (예측):** `e53_po`의 test contact 오차 감소율이 `e53_obs`보다 5%p 이상 높다.
+- **Q0:** `e53_obs` − `e51_cf`가 +3%p 이상이고 표준오차의 2배 이상(E51 재현).
+- **Q1:** `e53_po` − `e51_cf`가 +3%p 이상이고 표준오차의 2배 이상.
+- **Q2:** `e53_po` − `e53_obs`가 0보다 크고 표준오차의 2배 이상.
+- 해석 계획
+  - P1, Q2 통과: obstacle별 module이 다중 obstacle에서 interaction 이득을 키운다. obstacle 수에 무관한 구조로 확장할 근거다.
+  - P1 통과, Q2 미달: 예측은 좋아지지만 planning 이득은 같다. obstacle 3개에서는 다른 병목(cost, CEM)이 남는다.
+  - P1 미달: 이어 붙인 입력도 obstacle을 나눠 쓰고 있다. 3개에서 이득이 준 이유는 다른 데(동시 접촉, 학습 data 양)에 있다.
+- planning은 P1과 상관없이 한다(비용이 작고 Q2가 주 질문이다).
+
+**운영:** E51·E52 pipeline을 고쳐 `outputs/e53/`에 둔다(git 제외). 큰 수집은 `r3y` 하나다. smoke test는 obstacle별 모델을 작은 data로 학습하고 config에 `int_per_object: 3`이 저장되는지, planning에 obstacle 3개 입력이 들어가는지 본다.
+- 실행: `systemd-run --user --unit=e53-run --collect --setenv=HOURS=9 bash "$PWD/outputs/e53/launch.sh"`
+
+**비용 상한:** L4 세션 1개, 기한 9시간, 18 CU. 예상은 수집 약 1시간 45분, cache와 학습 약 2시간, planning 3조건 × 16 seed 약 2시간 30분이다. 합계 약 6시간 30분, 13 CU다.
+
+**실행 상태:** 사전 등록.

@@ -108,6 +108,25 @@ class FactorizedPredictor(nn.Module):
         b = x.size(0)
         return rearrange(proj(rearrange(x, 'b t d -> (b t) d')), '(b t) d -> b t d', b=b)
 
+    def _interaction_per_object(self, parts, act_emb, alpha):
+        """E53: obstacle k마다 [parts, oracle_k (6)]로 같은 h_int를 돌려 tanh 보정을 더한다. 반환은 interaction과 같다."""
+        K = self.int_per_object
+        base = torch.cat(parts, dim=-1)  # (B, T, D)
+        B, T = base.shape[:2]
+        if self.oracle is not None:
+            orc = self.oracle[:, :T].to(base.dtype).reshape(B, T, 3, K, 2)  # [pos, vel, pos_next] x K x (x, y)
+            orc = orc.permute(3, 0, 1, 2, 4).reshape(K, B, T, 6)           # obstacle k: [pos, vel, pos_next]
+        else:
+            orc = base.new_zeros(K, B, T, 6)
+        x = torch.cat([base.unsqueeze(0).expand(K, -1, -1, -1), orc], dim=-1).reshape(K * B, T, -1)
+        x = self.int_in(x)
+        a = act_emb.unsqueeze(0).expand(K, -1, -1, -1).reshape(K * B, T, -1)
+        h = self.h_int(torch.cat([x, a], dim=-1)) if self.int_arch == 'mlp' else self.h_int(x, a)
+        delta = (self.int_scale * torch.tanh(self.int_out(h))).reshape(K, B, T, -1).sum(0)
+        self.last_delta = delta
+        alpha_used = alpha.detach() if self.gate_isolated else alpha
+        return alpha_used * delta, alpha
+
     def forward(self, emb: torch.Tensor, act_emb: torch.Tensor) -> torch.Tensor:
         z_c, z_u = emb.split([self.dim_c, self.dim_u], dim=-1)
         T = emb.size(1)
@@ -342,6 +361,7 @@ class InteractionGatedPredictor(FactorizedPredictor):
         int_arch: str = 'transformer',
         int_input: str = 'state',
         forecaster_cfg: dict | None = None,
+        int_per_object: int = 0,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -379,7 +399,14 @@ class InteractionGatedPredictor(FactorizedPredictor):
         assert int_input in ('state', 'resolve')
         self.int_input = int_input
         extra = d_c + d_u if int_input == 'resolve' else 0
-        self.int_in = nn.Linear(d_c + d_u + int_oracle_dim + extra, d_c)
+        # int_per_object = K > 0 (E53): 정답 obstacle 입력(iawm.obs_oracle, [pos (2K), vel (2K), pos_next (2K)])을
+        # obstacle별 6차원으로 나눠, 같은 h_int(weight 공유)를 obstacle마다 한 번씩 돌리고 보정을 더한다.
+        # obstacle 순서와 개수에 무관한 구조다. gate α는 그대로 scalar 하나다.
+        self.int_per_object = int(int_per_object)
+        if self.int_per_object:
+            assert int_oracle_dim == 6 * self.int_per_object, (int_oracle_dim, self.int_per_object)
+        orc_in = 6 if self.int_per_object else int_oracle_dim
+        self.int_in = nn.Linear(d_c + d_u + orc_in + extra, d_c)
         # int_arch='mlp' (E20 후보): AdaLN-zero transformer 대신 frame별 3층 MLP. transformer는 블록 gate와
         # int_out이 모두 0에서 시작해 작은 lr에서 거의 움직이지 않는다는 의심을 확인하려고 둔다.
         self.int_arch = int_arch
@@ -430,6 +457,8 @@ class InteractionGatedPredictor(FactorizedPredictor):
             alpha = z_c.new_ones(*z_c.shape[:2], 1)
             self.last_logit = None
         parts = [z_c, z_u] + ([indep] if indep is not None else [])
+        if self.int_per_object:
+            return self._interaction_per_object(parts, act_emb, alpha)
         if self.int_oracle_dim > 0:
             T = z_c.size(1)
             if self.oracle is not None:
