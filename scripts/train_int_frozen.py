@@ -45,6 +45,7 @@ import json
 import re
 import sys
 import time
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -121,7 +122,8 @@ def obs_part_columns(orc: np.ndarray, part: str, k: int) -> np.ndarray:
     return orc[:, :OBS_PARTS[part] * k]
 
 
-def load_rows(model, path: Path, device, cache: Path | None, oracle: str, oracle_parts: str = 'full', k: int = 1):
+def load_rows(model, path: Path, device, cache: Path | None, oracle: str, oracle_parts: str = 'full', k: int = 1,
+              noise: float = 0.0, noise_seed: int = 0):
     """학습에 쓰는 row별 tensor를 GPU에 올린다. 정의는 analyze_gate.iter_clips, add_contact_labels와 같다."""
     import h5py
     import hdf5plugin  # noqa: F401
@@ -137,6 +139,10 @@ def load_rows(model, path: Path, device, cache: Path | None, oracle: str, oracle
         contact = f['contact'][:].reshape(len(f['contact']), -1)[:, 0]
         cn = contact_next_labels(contact, off, ep_len, FS)  # row j: frame j -> j+5 사이 contact
         orc = obs_part_columns(obs_oracle.dataset_column(f, FS), oracle_parts, k) if oracle == 'obs' else None
+        if orc is not None and noise > 0:  # E52: 속도 추정 오차 (row마다 한 번 뽑아 고정한다)
+            assert oracle_parts == 'full', '--oracle-noise는 full 입력에서만 쓴다 (planning도 full만 넣는다)'
+            orc = obs_oracle.vel_noise(orc, noise, k, np.random.default_rng(noise_seed), FS)
+            print(f'oracle velocity noise sigma {noise} px/step on {path.name} (seed {noise_seed})', flush=True)
         pos = positions(f) if oracle == 'forecast' else None  # forecaster px 진단에만 쓴다(학습에는 쓰지 않는다)
     rows = {'z': torch.from_numpy(z).to(device), 'act': torch.from_numpy(act).to(device),
             'cn': torch.from_numpy(cn).to(device)}
@@ -414,6 +420,7 @@ def main():
     ap.add_argument('--test-data', default=None, help='최종 수치를 잴 따로 수집한 data')
     ap.add_argument('--out', required=True, help='출력 checkpoint 폴더 이름')
     ap.add_argument('--oracle', default='none', choices=['none', 'obs', 'forecast'])
+    ap.add_argument('--oracle-noise', type=float, default=0.0, help='E52: obs 입력의 속도 오차 표준편차 (px/step). planning에는 +oracle_noise로 같은 값을 준다')
     ap.add_argument('--oracle-parts', default='full', choices=list(OBS_PARTS), help='E45 진단: obs 입력 중 쓸 성분')
     ap.add_argument('--fc-steps', type=int, default=20000, help='forecaster 학습 step (0 = 학습하지 않은 대조군)')
     ap.add_argument('--fc-hidden', type=int, default=1024)
@@ -463,7 +470,7 @@ def main():
     model = model.to(device).eval()
     pr, d_c = model.predictor, model.dim_c
     print(f'base={args.base} loaded {len(sd)} tensors, new={len(missing)}, trainable={n_train / 1e6:.3f}M '
-          f'oracle={args.oracle} parts={args.oracle_parts} anchor={args.fc_anchor} motion={args.fc_motion} depth_tag={args.fc_depth_tag} int_input={args.int_input} depth={args.int_depth} '
+          f'oracle={args.oracle} parts={args.oracle_parts} noise={args.oracle_noise} anchor={args.fc_anchor} motion={args.fc_motion} depth_tag={args.fc_depth_tag} int_input={args.int_input} depth={args.int_depth} '
           f'hidden={args.int_hidden_dim}', flush=True)
 
     cache_dir = Path(args.cache_dir) if args.cache_dir else home / 'latent_cache'
@@ -474,7 +481,8 @@ def main():
 
     def rows_of(name):
         r, o, l = load_rows(model, home / 'datasets' / name, device, cache_dir / f'{tag}__{Path(name).stem}.npy',
-                            args.oracle, args.oracle_parts, args.num_obstacles)
+                            args.oracle, args.oracle_parts, args.num_obstacles,
+                            args.oracle_noise, args.seed * 1000 + zlib.crc32(name.encode()) % 1000)
         if fc is not None and fc_ready[0]:  # forecaster를 고정한 뒤 읽는 test data
             r['fc'] = forecast_columns(fc, r)
             if fc.anchor:

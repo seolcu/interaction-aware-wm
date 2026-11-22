@@ -64,7 +64,8 @@ def img_transform(cfg):
 
 
 def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, oracle_horizon: int = 0,
-                        plan_log: bool = False, clip_history: bool = False, motion: bool = False):
+                        plan_log: bool = False, clip_history: bool = False, motion: bool = False,
+                        oracle_noise: float = 0.0, noise_seed: int = 0):
     """WorldModelPolicy에 두 가지를 더한다 (E26).
 
     obs_fix: World._evaluate_from_dataset은 env를 dataset 시작 상태로 맞춘 뒤 첫 관측 pixels를 dataset
@@ -78,6 +79,8 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
         (obstacle은 action과 무관하게 움직이므로 후보 action과 상관없이 정확하다). iawm.cfjepa_gate.CFJEPA.rollout이 읽는다.
     plan_log (E40): env step마다 [agent 위치, target 위치, contact]를 기록하고, 이번 호출에서 새로 계획할 env와
         그 시점의 step 번호를 남긴다(wrap_solver_count_and_gate가 계획의 예측과 묶는다).
+    oracle_noise (E52): 정답 obstacle 입력의 속도에 frame마다 N(0, σ²) px/step 오차를 더한다(iawm.obs_oracle.vel_noise).
+        계획할 때마다 새로 뽑는다. 학습 때(train_int_frozen.py --oracle-noise)와 같은 σ를 준다.
     motion (E50): history frame마다 1 env step 전 frame을 info['pixels_prev']로 넣는다. 첫 계획에서도 있도록 시작 전 frame을
         하나 더 render_past로 만든다(그 action도 0). iawm.cfjepa_gate.CFJEPA.rollout이 encode해 forecaster feature를 만든다.
     """
@@ -96,6 +99,7 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
             self.pos_log = [[] for _ in range(n)]      # env step마다 [agent xy, target xy, contact] (E40)
             self._plan_envs, self._plan_t = [], []
             self.started = np.zeros(n, dtype=bool)
+            self._noise_rng = np.random.default_rng(noise_seed)  # E52
 
         def _unwrapped(self, i):
             return self.env.envs[i].unwrapped
@@ -155,13 +159,17 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
                         oo.plan_oracle([self.obs_states[i][j] for j in idx], self._unwrapped(i), oracle_horizon, frameskip)
                         for i in range(n)
                     ])
+                    if oracle_noise > 0:  # E52
+                        k = info_dict['obs_oracle'].shape[-1] // 6
+                        info_dict['obs_oracle'] = oo.vel_noise(info_dict['obs_oracle'], oracle_noise, k, self._noise_rng, frameskip)
             if not getattr(self, '_logged', False):  # 첫 호출에서 입력 모양을 한 번 남긴다 (smoke test 확인용)
                 self._logged = True
                 print('[history policy] pixels', info_dict['pixels'].shape,
                       'hist_action', getattr(info_dict.get('hist_action'), 'shape', None),
                       'frames/env', len(self.frames[0]), 'obs_fix', obs_fix,
                       'obs_oracle', getattr(info_dict.get('obs_oracle'), 'shape', None),
-                      'pixels_prev', getattr(info_dict.get('pixels_prev'), 'shape', None), flush=True)
+                      'pixels_prev', getattr(info_dict.get('pixels_prev'), 'shape', None),
+                      'oracle_noise', oracle_noise, flush=True)
             action = super().get_action(info_dict, **kwargs)
             for i in range(n):
                 a = np.asarray(action[i], dtype=np.float32)
@@ -423,6 +431,7 @@ def run(cfg: DictConfig):
                 policy_cls, plan_history, cfg.plan_config.action_block, obs_fix,
                 oracle_horizon=cfg.plan_config.horizon if plan_oracle else 0, plan_log=plan_log,
                 clip_history=bool(cfg.get("action_clip", False)), motion=motion,
+                oracle_noise=float(cfg.get("oracle_noise", 0.0)) if plan_oracle else 0.0, noise_seed=int(cfg.seed),
             )
         replan = str(cfg.get("replan", "none"))
         if replan in ("gate", "random"):  # E37: gate α가 tau를 넘는 block까지만 실행하고 다시 계획

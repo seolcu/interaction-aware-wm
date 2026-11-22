@@ -2370,3 +2370,40 @@ planning 성공률 (%, seed 42~57, 50 episode씩)
 **운영:** 감시가 학습 결과와 최종 결과를 받은 뒤 세션을 끄고 꺼진 것을 확인했다.
 
 **결과물:** 로컬 `outputs/e50/res/final/`(git 제외), Proton Drive `results/E50_motion_cue/`.
+
+## 2026-11-22 · E52. 정답 obstacle 입력의 속도 오차 곡선: 예측이 얼마나 정확해야 planning이 오르는가 (obstacle 2개, base 고정)
+
+**목적:** E45~E50에서 label 없는 h_int 입력은 contact z^c 오차를 6~20% 줄였고 어느 것도 planning 성공률을 올리지 못했다. 정답 obstacle 입력(60~74%)만 올렸다(obstacle 2개에서 +10~12%p, E47·E49·E50). 정답 입력에 속도 오차를 단계별로 넣어, planning 이득이 어느 오차에서 사라지는지와 그때의 contact 오차 감소율을 잰다. label 없는 방법이 넘어야 할 목표선을 숫자로 정하고, E45 진단(부족한 것은 속도)을 planning 수준에서 확인한다.
+
+**구현**
+- `iawm.obs_oracle.vel_noise`: frame·obstacle마다 ε ~ N(0, σ²) px/step을 vel에 더하고 pos_next에 5ε을 더한다(속도를 ε만큼 잘못 알면 5 step 뒤 위치도 그만큼 틀린다). pos는 정확하게 둔다(E38: z^c가 obstacle 위치를 1.8px로 담는다).
+- `scripts/train_int_frozen.py --oracle-noise σ`: 학습·검증·test row마다 한 번 뽑아 고정한다(file마다 다른 seed).
+- `scripts/eval.py +oracle_noise=σ`: 계획할 때마다 history와 미래 frame 모두에 새로 뽑는다(seed는 eval seed).
+- 로컬에서 vel 오차의 표준편차가 σ이고 pos_next 오차가 정확히 5배, pos는 그대로임을 확인했다.
+
+**설정:** base `e47_cf`, 위치 probe `pos_probe_e47_cf.pt`, data(`r2y`, `r2yt`, `collision_tworoom`, 같은 seed)와 h_int 크기는 E50과 같다.
+
+| 이름 | 속도 오차 σ (px/step) | 참고 |
+|---|---|---|
+| `e52_n0` | 0 | E47·E49·E50의 정답 입력과 같다 |
+| `e52_n2` | 2 | E38에서 latent의 obstacle 속도 오차가 1.7 |
+| `e52_n4` | 4 | |
+| `e52_n8` | 8 | obstacle 속도가 3~18이므로 속도 정보가 거의 없다 |
+
+planning은 P2 + `+action_clip=true` + agent 위치 cost로 `e47_cf`와 σ 4개 모델을 L4 한 세션에서 seed 42~57(16개)로 짝지어 잰다(5개 동시).
+
+**판정 (실행 전에 정함)**
+- σ마다 `e52_n<σ>` − `e47_cf`가 +3%p 이상이고 표준오차의 2배 이상이면 "이득 있음"이다.
+- **σ\***: 이득이 있는 가장 큰 σ다. 그 모델의 test contact 오차 감소율을 label 없는 입력의 목표선으로 삼는다.
+- **Q0 재현:** `e52_n0`이 이득 있음이어야 실험이 유효하다. 아니면 이 세션의 곡선은 해석하지 않는다.
+- 해석 계획
+  - σ = 2에서도 이득이 있으면: latent 수준(1.7)의 속도 정확도로 충분하다. label 없는 방법의 병목은 속도를 h_int 입력으로 꺼내는 방식이다.
+  - σ = 2에서 이득이 사라지면: latent 수준보다 정확한 속도가 필요하다. label 없는 방법으로는 어렵고, 한계로 정리한다.
+  - contact 오차 감소율과 성공률 이득의 관계를 E45~E51의 점들과 함께 한 그림으로 정리한다(발표용).
+
+**운영:** E50 pipeline을 고쳐 `outputs/e52/`에 둔다(git 제외). smoke test는 σ = 0, 4를 작은 data로 학습하고, 학습 log와 planning log에서 같은 σ가 들어갔는지 확인한다. 큰 수집은 `r2y` 하나다(E51 디스크 문제).
+- 실행: `systemd-run --user --unit=e52-run --collect --setenv=HOURS=9 bash "$PWD/outputs/e52/launch.sh"`
+
+**비용 상한:** L4 세션 1개, 기한 9시간, 18 CU. 예상은 수집 약 1시간 45분, cache와 학습 약 1시간 40분, planning 5조건 × 16 seed 약 3시간이다. 합계 약 7시간, 14 CU다.
+
+**실행 상태:** 사전 등록.

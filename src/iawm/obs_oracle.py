@@ -11,6 +11,8 @@ pos는 (px - 112) / 112, vel은 (px/step) / 6으로 고정 scale한다. dataset 
 
 - `dataset_column`: h5의 obstacle_pos, obstacle_vel에서 row별 값을 만든다(학습, 분석).
 - `plan_states`, `past_state`: planning 중 env에서 현재와 미래, 시작 전 상태를 계산한다(scripts/eval.py).
+- `vel_noise` (E52): 속도 추정 오차를 흉내 낸다. frame·obstacle마다 오차 ε ~ N(0, σ²) px/step을 vel에 더하고,
+  pos_next에는 같은 ε의 frameskip배를 더한다(속도를 ε만큼 잘못 알면 다음 위치도 그만큼 틀린다). pos는 그대로 둔다.
 """
 
 from __future__ import annotations
@@ -46,6 +48,18 @@ def dataset_column(f, frameskip: int = 5) -> np.ndarray:
         if L > frameskip:
             nxt[o:o + L - frameskip] = pos[o + frameskip:o + L]
     return encode(pos, vel, nxt)
+
+
+def vel_noise(orc: np.ndarray, sigma: float, k: int, rng: np.random.Generator, frameskip: int = 5) -> np.ndarray:
+    """encode 결과 (..., 6K)에 속도 오차를 더한 사본 (E52). sigma는 px/step 단위다. sigma <= 0이면 그대로 돌려준다."""
+    orc = np.array(orc, dtype=np.float32, copy=True)
+    if sigma <= 0:
+        return orc
+    assert orc.shape[-1] == 6 * k, (orc.shape, k)
+    eps = rng.normal(0.0, sigma, orc.shape[:-1] + (2 * k,)).astype(np.float32)
+    orc[..., 2 * k:4 * k] += eps / VEL_SCALE
+    orc[..., 4 * k:6 * k] += frameskip * eps / POS_SCALE
+    return orc
 
 
 def _flat(t) -> np.ndarray:
