@@ -125,7 +125,7 @@ This file provides guidance to AI agents when working with code in this reposito
 - CF-JEPA가 distractor를 stable-worldmodel에 어떻게 넣었는지(코드 미공개)
 - Iso-Dream++의 학술지 게재본(TPAMI 등) 여부
 
-## 지금까지의 핵심 결과 (11/22, E51까지)
+## 지금까지의 핵심 결과 (11/23, E52까지)
 
 자세한 수치와 설정은 `docs/experiments.md`에 있다. 같은 실험을 반복하기 전에 해당 E 번호를 먼저 읽는다.
 
@@ -148,6 +148,7 @@ This file provides guidance to AI agents when working with code in this reposito
 - **cross-fit 예측 + 실제 frame (E49):** cross-fit이면 h_int가 forecaster 예측과 마지막 실제 frame을 함께 쓴다(검증 깊은 구간 14.0%, 각각 9.8%, 11.4%). 그래도 planning은 CF-JEPA보다 −1.4 ± 1.9%p, 대조군보다 −2.3 ± 1.7%p였다. 정답 입력은 +10.0 ± 1.8%p(13승 0패)로 E47을 재현했다. label 없는 입력의 contact 이득은 15%를 넘지 않고(정답 60%), 첫 계획 시점 예측(`PLAN0`)은 1~3%만 고친다. 부족한 것은 obstacle 속도다(E45 진단). block 간격 frame에서는 obstacle 2개의 대응이 모호하다.
 - **1 step 차이로 속도 단서 (E50):** 마지막 실제 frame과 그 1 env step 전 frame의 latent 차이를 h_int에 더 넣었다(label 없음). 첫 계획 시점 contact 이득이 3%에서 19%로 올라 속도 단서로 쓰였다. 그래도 planning은 CF-JEPA와 같다(−0.5 ± 2.6%p, 대조군 대비 −1.0 ± 2.4%p). 정답 입력은 +12.3 ± 1.5%p(16승 0패)로 세 번째 재현이다. label 없는 입력은 E45~E50에서 contact 이득 6~20%였고 어느 것도 planning을 올리지 못했다. 정답 입력(60~74%)만 올렸다. 고른 계획에서 실패 episode를 도착한다고 예측한 비율이 CF-JEPA와 같다(0.95 대 정답 0.85).
 - **obstacle 3개 (E51):** `e47_cf`를 obstacle 3개(r3b) data로 3 epoch fine-tune한 `e51_cf`에서 정답 obstacle 입력이 CF-JEPA를 **+7.9 ± 2.2%p(80.4 대 72.5, 12승 2패)** 이겼다. obstacle 1·2·3개의 이득은 +6.5, +10~12, +7.9%p다. CF-JEPA는 85 → 78 → 72로 떨어진다. 정답 입력 h_int의 contact 오차 감소가 74 → 60 → 48%로 줄어, 이득이 obstacle 수에 비례해 커지지 않는다. 발표 피드백 질문에 대한 답: 이득은 유지되지만 h_int 하나로는 다중 접촉 예측이 약해진다. object별 interaction module이 향후 과제다.
+- **속도 오차 곡선 (E52):** 정답 obstacle 입력의 속도에 오차 σ px/step를 섞었다. σ = 0은 CF-JEPA 대비 +7.3 ± 1.5%p(contact 감소 60%)이고, σ = 2는 +0.3 ± 1.3%p(25%), σ = 4, 8도 이득이 없다. latent의 속도 오차(1.7, E38) 수준이면 이득이 사라진다. label 없는 입력(6~20%)이 planning을 못 올린 이유와 맞는다. planning 이득에는 contact 감소 25~60% 사이의 문턱이 있고, 그 이상의 정확한 obstacle 속도가 필요하다.
 - **Colab 운영 (E51):** `collect_collision.py`는 압축 전 raw 파일(frame당 150KB, 1만 episode 약 110GB)을 쓴 뒤 압축한다. 1만 episode 두 개를 동시에 수집하면 L4 세션 디스크(236GB)가 찬다. 큰 수집은 하나씩 한다. 수집(OMP thread 6개 × 2)과 GPU 학습(data loader worker 5개)이 겹치면 수집이 40배 느려진다.
 - **분석 주의 (E40):** plan log에서 성공한 env는 위치가 멈춘 채 기록이 이어진다. 예측과 비교할 때 goal에 닿은 step 이후를 빼야 한다(`analyze_plan_log.py`에 반영).
 - **현재 목표 (11/16):** 최종 발표(11/26) 전에, 제안 방법이 Collision TwoRoom(r1x, P2)에서 CF-JEPA보다 planning 성공률이 공정 비교로 높다는 결과를 낸다. 다음 실험은 위 결과를 바탕으로 원인을 진단한 뒤 정한다. E42 이후의 질문은 "위치 label과 정답 obstacle 입력 없이도 이 이득이 남는가"다. 개선안마다 근거, 예상 비용, 대조군, 실패 판정 기준을 함께 제시한다.
@@ -200,7 +201,7 @@ E25~E37에서 CU를 낭비하거나 결론을 잘못 낼 뻔한 경험에서 나
 - **역할 (중간 발표까지):** 강연우는 gate 구현과 모델 학습, 설규원은 Collision env와 data, 조하은은 평가와 발표 준비를 맡는다. CF-JEPA 재구현은 설규원이 했다(E3).
 - **코드 (GitHub):** 팀원 3명 모두 collaborator다. 작업 단위로 branch(`<이름>/<작업>`, 예: `yeonwoo/gate`)를 만들고 PR로 main에 합친다.
 - **결과물 (Proton Drive):** 그림, 영상, checkpoint, data는 공유 폴더의 `results/E<번호>_<이름>/`에 올리고, 폴더의 `README.txt`에 한 줄 설명을 더한다.
-- **실험 기록:** `docs/experiments.md`에 E 번호를 이어서 붙인다(현재 E51까지). 목적, 설정, 실행 명령, 결과, 남은 문제를 적는다. 실험 번호를 먼저 정하고 쓰면 번호가 겹치지 않는다.
+- **실험 기록:** `docs/experiments.md`에 E 번호를 이어서 붙인다(현재 E52까지). 목적, 설정, 실행 명령, 결과, 남은 문제를 적는다. 실험 번호를 먼저 정하고 쓰면 번호가 겹치지 않는다.
 - **Colab:** 각자 자기 계정을 쓴다. 환경 준비는 `scripts/colab/setup_lewm.sh` 하나로 된다(약 10분, data 포함). 운영 규칙은 위 "실험 운영 규칙"을 따른다.
 - **팀원에게 일을 줄 때:** 구체적인 구현 방법보다 요구사항(무엇이 되어야 하는지, 어떻게 확인하는지)을 준다. 간단한 일은 설규원이 직접 한다.
 
