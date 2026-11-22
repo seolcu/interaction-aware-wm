@@ -2240,7 +2240,49 @@ planning (success rate %, r2b, 범위 제한 + 위치 cost, seed 42~57 paired, L
 
 **비용 상한:** L4 세션 1개, 기한 10시간, 20 CU. 예상 시간은 수집 약 2시간, fine-tune 약 1.5시간, probe와 학습 약 2시간, planning 2조건 × 16 seed 약 1.5시간이다. 합계 약 7시간, 14 CU다. 11/21에 하루 한도를 45 CU로 올렸다(발표 전까지).
 
-**실행 상태:** 11/21 17:32 첫 실행은 data 수집 중 Colab 디스크가 차서 멈췄다(errno 28). 압축 전 raw 파일(frame당 150KB, 1만 episode 약 110GB)을 `r3b`, `r3y` 두 개 동시에 썼다. 학습과 planning은 시작하지 않았다. 큰 수집을 하나씩 하도록 `collect.sh`를 고쳐 11/22 10:05에 다시 시작했다(기한 11시간).
+**실행 상태:** 11/21 17:32 첫 실행은 data 수집 중 Colab 디스크가 차서 멈췄다(errno 28). 압축 전 raw 파일(frame당 150KB, 1만 episode 약 110GB)을 `r3b`, `r3y` 두 개 동시에 썼다. 학습과 planning은 시작하지 않았다. 큰 수집을 하나씩 하도록 `collect.sh`를 고쳐 11/22 10:05~17:40(KST)에 다시 실행했다. 비용은 첫 실행을 포함해 약 20 CU다.
+
+**결과: Q0 통과. obstacle 3개에서도 정답 obstacle 입력이 CF-JEPA를 +7.9 ± 2.2%p 이겼다. obstacle 2개(+10~12%p)보다는 작다.**
+
+- base `e51_cf`의 위치 probe는 agent 위치를 held-out 1.0px로 맞힌다.
+- `e51_obs`의 test contact z^c 오차 감소율은 47.6%다(obstacle 2개 `e50_obs` 60.4%). 비접촉 27.2%, α AUROC 0.956이다.
+
+planning 성공률 (%, seed 42~57, 50 episode씩)
+
+| 모델 | 평균 | seed별 |
+|---|---|---|
+| `e51_cf` (CF-JEPA) | 72.5 | 72 72 68 68 74 72 68 74 74 70 66 82 82 78 72 68 |
+| `e51_obs` (정답 입력) | **80.4** | 86 78 82 82 78 70 88 76 74 92 78 74 84 86 72 86 |
+
+| 비교 | 차이 (paired) | 이긴 / 진 seed | 판정 |
+|---|---|---|---|
+| **Q0** `e51_obs` − `e51_cf` | **+7.88 ± 2.18** | 12 / 2 | **통과** (+3 이상, 표준오차 2배 4.4 이상) |
+
+고른 계획에서의 예측(`analyze_plan_log.py`, 800 episode)
+
+| 모델 | 실패 episode 수 | 실패 중 도착한다고 예측한 비율 | 5 block 뒤 contact 오차 (px) |
+|---|---|---|---|
+| `e51_cf` | 220 | 0.91 | 50.7 |
+| `e51_obs` | 157 | **0.85** | **42.8** |
+
+**obstacle 개수별 정리 (모두 P2 + `+action_clip=true` + agent 위치 cost, 16 seed paired, 세션은 서로 다르다)**
+
+| obstacle 수 | CF-JEPA | 정답 입력 | 차이 | 정답 입력 h_int의 contact 오차 감소 |
+|---|---|---|---|---|
+| 1 (E42) | 85.1 | 91.6 | +6.5 ± 1.2 | 74% (E39) |
+| 2 (E47, E49, E50) | 77.5 / 78.1 / 77.6 | 89.4 / 88.1 / 89.9 | +11.9 / +10.0 / +12.3 | 60% |
+| 3 (E51) | 72.5 | 80.4 | +7.9 ± 2.2 | 48% |
+
+**해석**
+- **obstacle 3개에서도 interaction 정보의 이득은 분명하다.** 16 seed 중 12승 2패다. obstacle이 늘수록 CF-JEPA 성공률은 85 → 78 → 72로 떨어지고, 정답 입력 모델은 그 하락의 일부를 막는다.
+- **이득은 obstacle 수에 비례해 커지지 않았다.** 사전 등록한 해석대로 정답 입력 h_int의 push 예측을 보면, contact 오차 감소가 74% → 60% → 48%로 줄었다. obstacle이 많아지면 정답 위치·속도를 주어도 h_int 하나가 여러 동시 접촉을 다 고치지 못한다. 정답 입력 모델의 성공률도 80.4로 obstacle 2개(약 89)보다 낮다.
+- 발표 피드백 질문("obstacle이 많아질 때")에 대한 답: interaction을 모델링하면 obstacle 3개까지 planning 이득이 유지된다. 다만 scalar gate와 h_int 하나의 구조로는 obstacle이 늘수록 예측 개선 폭이 줄어든다. object별 interaction module(예: SPARTAN식 object 간 attention)이 향후 과제다.
+
+**운영**
+- 재실행에서 r3b 수집 뒤 base fine-tune(GPU, data loader worker 5개)과 r3y 수집이 겹쳤을 때, 수집이 episode당 0.4초에서 17초로 40배 느려졌다(CPU 12개에 thread 과다). fine-tune이 끝나자 회복했다. 약 1.5시간 늦어져 기한을 23:14로 늘렸다.
+- 감시가 결과를 받은 뒤 세션을 끄고 꺼진 것을 확인했다.
+
+**결과물:** 로컬 `outputs/e51/res/`(git 제외), Proton Drive `results/E51_three_obstacles/`.
 
 ## 2026-11-21 · E50. 1 env step 차이로 obstacle 속도 단서를 h_int에 넣기 (obstacle 2개, label 없음, base 고정)
 
