@@ -2573,3 +2573,24 @@ planning 성공률 (%, seed 58~89, 50 episode씩)
 - E52와 함께 보면, contact 이득이 이미 문턱(25~60% 사이)을 넘은 뒤에는 수집 data의 예측 개선이 planning으로 거의 이어지지 않는다.
 
 **결과물:** 로컬 `outputs/e54/res/`(git 제외), Proton Drive `results/E54_per_object_32seeds/`.
+
+## 2026-11-23 · E55. obstacle 4개 조건에서 정답 obstacle 입력의 planning 이득 (base fine-tune 후 고정)
+
+**목적:** 정답 obstacle 입력의 CF-JEPA 대비 planning 이득은 obstacle 1개 +6.5(E42), 2개 +10~12(E47·E49·E50), 3개 +9.6(E54, 32 seed)%p였다. obstacle 4개에서도 이득이 유지되는지 재서 obstacle 개수별 곡선을 1~4개로 완성한다. 발표 피드백("obstacle이 많아질 때")에 대한 네 번째 점이다.
+
+**설정:** E51과 같은 방식이다.
+- data(모두 obstacle 4개, 반지름 22): `r4b`(fine-tune과 위치 probe, 1만 episode, seed 5454), `r4y`(h_int 학습, 1만, seed 4444), `r4yt`(test 1,500, seed 779), `collision_tworoom`(planning 시작 상태), `r4dbg`(smoke 200, seed 31).
+- base `e55_cf`: E51의 `e51_cf`(obstacle 3개)에서 시작해 `r4b`로 3 epoch fine-tune한다. 위치 probe `pos_probe_e55_cf.pt`는 `r4b`로 학습한다.
+- `e55_obs`: base 고정, 정답 obstacle [위치, 속도, 다음 위치] × 4개(24)를 이어 붙여 h_int에 넣는다(E54에서 obstacle별 구조는 planning 차이가 없었다).
+- planning: `world.num_obstacles=4`, P2 + `+action_clip=true` + agent 위치 cost. L4 한 세션에서 seed 42~73(32개)을 짝짓는다.
+
+**판정 (실행 전에 정함):** **Q0** `e55_obs` − `e55_cf`가 +3%p 이상이고 표준오차의 2배 이상.
+- 통과: obstacle 1~4개 모두에서 interaction 정보의 planning 이득이 있다. 2개 이상에서 크기(+10%p 안팎)가 유지되는지 본다(세션이 달라 크기 비교는 참고).
+- 미달: 4개에서는 정답 입력으로도 이득이 없다. plan log와 contact 감소율로 원인(예측, planning)을 나눈다.
+
+**운영:** E51 pipeline을 고쳐 `outputs/e55/`에 둔다(git 제외). E51의 두 문제를 피한다. 큰 수집은 하나씩 하고(디스크), fine-tune은 수집이 모두 끝난 뒤 시작한다(CPU 경합).
+- 실행: `systemd-run --user --unit=e55-run --collect --setenv=HOURS=11 bash "$PWD/outputs/e55/launch.sh"`
+
+**비용 상한:** L4 세션 1개, 기한 11시간, 22 CU. 예상은 수집 약 3시간, fine-tune 약 2시간 20분, probe·cache·학습 약 1시간, planning 2조건 × 32 seed 약 2시간 30분이다. 합계 약 9시간, 18 CU다.
+
+**실행 상태:** 사전 등록.
