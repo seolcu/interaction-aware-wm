@@ -372,6 +372,11 @@ def get_dataset(cfg, dataset_name):
 @hydra.main(version_base=None, config_path="../configs/eval", config_name="tworoom")
 def run(cfg: DictConfig):
     """Run evaluation of dinowm vs random policy."""
+    # E57: planning 6개를 한 세션에서 동시에 돌리면 프로세스마다 torch thread가 수십 개라 CPU 12개에서 서로 밀린다
+    # (load 32). 기본 CPU thread를 2개로 둔다. 혼자 돌릴 때는 IAWM_EVAL_THREADS로 늘린다(0이면 torch 기본값).
+    _nt = int(os.environ.get("IAWM_EVAL_THREADS", "2"))
+    if _nt > 0:
+        torch.set_num_threads(_nt)
     assert (
         cfg.plan_config.horizon * cfg.plan_config.action_block <= cfg.eval.eval_budget
     ), "Planning horizon must be smaller than or equal to eval_budget"
