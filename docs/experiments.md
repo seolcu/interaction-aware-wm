@@ -2593,4 +2593,4 @@ planning 성공률 (%, seed 58~89, 50 episode씩)
 
 **비용 상한:** L4 세션 1개, 기한 11시간, 22 CU. 예상은 수집 약 3시간, fine-tune 약 2시간 20분, probe·cache·학습 약 1시간, planning 2조건 × 32 seed 약 2시간 30분이다. 합계 약 9시간, 18 CU다.
 
-**실행 상태:** 사전 등록.
+**실행 상태:** 실행하지 않음. 11/23 14:05 launch에서 Colab이 L4 세션을 내주지 않았다(`assign ... Service Unavailable`, CU 사용 없음). 같은 날 사용자와 논의해, 남은 시간을 label 없는 제안 방법(화면에서 obstacle 상태를 읽는 탐지기, E56)에 쓰기로 하고 이 실험은 취소했다. obstacle 4개는 향후 과제로 남긴다.
