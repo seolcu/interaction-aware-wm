@@ -65,7 +65,7 @@ def img_transform(cfg):
 
 def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, oracle_horizon: int = 0,
                         plan_log: bool = False, clip_history: bool = False, motion: bool = False,
-                        oracle_noise: float = 0.0, noise_seed: int = 0):
+                        oracle_noise: float = 0.0, noise_seed: int = 0, est=None, est_horizon: int = 0):
     """WorldModelPolicy에 두 가지를 더한다 (E26).
 
     obs_fix: World._evaluate_from_dataset은 env를 dataset 시작 상태로 맞춘 뒤 첫 관측 pixels를 dataset
@@ -81,6 +81,10 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
         그 시점의 step 번호를 남긴다(wrap_solver_count_and_gate가 계획의 예측과 묶는다).
     oracle_noise (E52): 정답 obstacle 입력의 속도에 frame마다 N(0, σ²) px/step 오차를 더한다(iawm.obs_oracle.vel_noise).
         계획할 때마다 새로 뽑는다. 학습 때(train_int_frozen.py --oracle-noise)와 같은 σ를 준다.
+    est (E56): (탐지기, 예측기, device). history frame마다 (1 step 전 frame, frame)으로 obstacle을 탐지해
+        info['obs_est'] (n, history + est_horizon - 1, 7·K_MAX)를 만든다(iawm.obs_detector.plan_features). 첫 계획에도
+        1 step 전 frame이 있도록 시작 전 frame을 하나 더 render_past로 만든다. 지금 frame의 탐지를 env의 정답과 비교해
+        self.est_err에 모은다(진단 출력).
     motion (E50): history frame마다 1 env step 전 frame을 info['pixels_prev']로 넣는다. 첫 계획에서도 있도록 시작 전 frame을
         하나 더 render_past로 만든다(그 action도 0). iawm.cfjepa_gate.CFJEPA.rollout이 encode해 forecaster feature를 만든다.
     """
@@ -100,6 +104,7 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
             self._plan_envs, self._plan_t = [], []
             self.started = np.zeros(n, dtype=bool)
             self._noise_rng = np.random.default_rng(noise_seed)  # E52
+            self.est_err = {'pos': [], 'vel': [], 'miss': 0, 'fp': 0, 'n': 0}  # E56
 
         def _unwrapped(self, i):
             return self.env.envs[i].unwrapped
@@ -109,7 +114,8 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
             pix = np.array(info_dict['pixels'], copy=True)  # (n, 1, H, W, C)
             n = pix.shape[0]
             pre = (history - 1) * frameskip
-            extra = 1 if motion else 0
+            extra = 1 if (motion or est is not None) else 0
+            track_obs = oracle_horizon > 0 or est is not None
             for i in range(n):
                 if not self.started[i]:
                     env = self._unwrapped(i)
@@ -118,12 +124,12 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
                     if pre > 0:
                         for k in range(pre + extra, 0, -1):
                             self.frames[i].append(np.asarray(env.render_past(k)))
-                            if oracle_horizon > 0:
+                            if track_obs:
                                 self.obs_states[i].append(oo.past_state(env, k))
                             self.raw_actions[i].append(np.zeros(self.env.single_action_space.shape, np.float32))
                     self.started[i] = True
                 self.frames[i].append(pix[i, -1].copy())
-                if oracle_horizon > 0:
+                if track_obs:
                     self.obs_states[i].append(oo.current_state(self._unwrapped(i)))
             if plan_log:
                 for i in range(n):
@@ -159,6 +165,22 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
                         oo.plan_oracle([self.obs_states[i][j] for j in idx], self._unwrapped(i), oracle_horizon, frameskip)
                         for i in range(n)
                     ])
+                if est is not None:  # E56: 화면에서 obstacle 상태를 읽는다
+                    from iawm import obs_detector as od
+                    det, fc, dev = est
+                    cur = np.stack([self.frames[i][j] for i in range(n) for j in idx])
+                    prv = np.stack([self.frames[i][j - 1] for i in range(n) for j in idx])
+                    P, V, M = det.detect(torch.from_numpy(prv).to(dev), torch.from_numpy(cur).to(dev))
+                    P, V, M = (t.cpu().numpy().reshape(n, len(idx), *t.shape[1:]) for t in (P, V, M))
+                    feats = []
+                    for i in range(n):
+                        feats.append(od.plan_features([(P[i, h], V[i, h], M[i, h]) for h in range(len(idx))], fc, est_horizon, dev))
+                        tp, tv = self.obs_states[i][-1]
+                        pe, ve, miss, fp = od.match_error(P[i, -1], V[i, -1], M[i, -1], tp.reshape(-1, 2), tv.reshape(-1, 2))
+                        self.est_err['pos'] += pe; self.est_err['vel'] += ve
+                        self.est_err['miss'] += miss; self.est_err['fp'] += fp; self.est_err['n'] += len(tp) // 2
+                    info_dict['obs_est'] = np.stack(feats).astype(np.float32)
+                if oracle_horizon > 0:
                     if oracle_noise > 0:  # E52
                         k = info_dict['obs_oracle'].shape[-1] // 6
                         info_dict['obs_oracle'] = oo.vel_noise(info_dict['obs_oracle'], oracle_noise, k, self._noise_rng, frameskip)
@@ -169,7 +191,7 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
                       'frames/env', len(self.frames[0]), 'obs_fix', obs_fix,
                       'obs_oracle', getattr(info_dict.get('obs_oracle'), 'shape', None),
                       'pixels_prev', getattr(info_dict.get('pixels_prev'), 'shape', None),
-                      'oracle_noise', oracle_noise, flush=True)
+                      'oracle_noise', oracle_noise, 'obs_est', getattr(info_dict.get('obs_est'), 'shape', None), flush=True)
             action = super().get_action(info_dict, **kwargs)
             for i in range(n):
                 a = np.asarray(action[i], dtype=np.float32)
@@ -414,6 +436,16 @@ def run(cfg: DictConfig):
         pr = model.predictor
         plan_oracle = (getattr(pr, "int_oracle_dim", 0) > 0 and getattr(pr, "int_oracle_key", "") == "obs_oracle"
                        and getattr(pr, "gate_mode", "off") != "off")
+        est = None
+        if (getattr(pr, "int_oracle_dim", 0) > 0 and getattr(pr, "int_oracle_key", "") == "obs_est"
+                and getattr(pr, "gate_mode", "off") != "off"):  # E56: 탐지기 입력 모델
+            from iawm import obs_detector as od
+            assert cfg.get("obs_detector"), "탐지기 입력 모델은 +obs_detector=<checkpoint>가 필요하다"
+            assert plan_history == pr.num_frames, "탐지기 입력 모델은 +plan_history가 모델 history 길이와 같아야 한다"
+            dev = next(model.parameters()).device
+            det, fc, meta = od.load(Path(swm.data.utils.get_cache_dir(), "checkpoints", str(cfg.obs_detector)), dev)
+            est = (det, fc, dev)
+            print(f"[obs est] detector {cfg.obs_detector} val {meta.get('det_val')} horizon {cfg.plan_config.horizon}", flush=True)
         if plan_oracle:  # E39: 정답 obstacle 상태를 planning에 넣는다
             assert plan_history == pr.num_frames, "정답 obstacle 입력 모델은 +plan_history가 모델 history 길이와 같아야 한다"
             print(f"[plan oracle] obs_oracle dim {pr.int_oracle_dim} horizon {cfg.plan_config.horizon}", flush=True)
@@ -432,6 +464,7 @@ def run(cfg: DictConfig):
                 oracle_horizon=cfg.plan_config.horizon if plan_oracle else 0, plan_log=plan_log,
                 clip_history=bool(cfg.get("action_clip", False)), motion=motion,
                 oracle_noise=float(cfg.get("oracle_noise", 0.0)) if plan_oracle else 0.0, noise_seed=int(cfg.seed),
+                est=est, est_horizon=int(cfg.plan_config.horizon),
             )
         replan = str(cfg.get("replan", "none"))
         if replan in ("gate", "random"):  # E37: gate α가 tau를 넘는 block까지만 실행하고 다시 계획
@@ -518,6 +551,10 @@ def run(cfg: DictConfig):
         ol = np.array(policy.oob_log)
         w = ol[:, 2] / ol[:, 2].sum()
         print(f"[actions] out of env bounds: first block {(ol[:, 0] * w).sum():.4f} all blocks {(ol[:, 1] * w).sum():.4f}", flush=True)
+    ee = getattr(policy, "est_err", None)
+    if ee and ee['n']:  # E56: 계획 시점의 탐지 오차 (env 정답과 비교)
+        print(f"[obs est] plan-time pos_mae {np.mean(ee['pos']):.3f} vel_mae {np.mean(ee['vel']):.3f} "
+              f"vel_p90 {np.quantile(ee['vel'], .9):.3f} miss {ee['miss'] / ee['n']:.4f} fp {ee['fp'] / ee['n']:.4f} n {ee['n']}", flush=True)
     if getattr(policy, "sim_err", None):
         err = np.array(policy.sim_err)
         print(f"[oracle] sim error mean {err.mean():.4f} p50 {np.median(err):.4f} p99 {np.quantile(err, .99):.4f} "

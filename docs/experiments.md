@@ -2594,3 +2594,50 @@ planning 성공률 (%, seed 58~89, 50 episode씩)
 **비용 상한:** L4 세션 1개, 기한 11시간, 22 CU. 예상은 수집 약 3시간, fine-tune 약 2시간 20분, probe·cache·학습 약 1시간, planning 2조건 × 32 seed 약 2시간 30분이다. 합계 약 9시간, 18 CU다.
 
 **실행 상태:** 실행하지 않음. 11/23 14:05 launch에서 Colab이 L4 세션을 내주지 않았다(`assign ... Service Unavailable`, CU 사용 없음). 같은 날 사용자와 논의해, 남은 시간을 label 없는 제안 방법(화면에서 obstacle 상태를 읽는 탐지기, E56)에 쓰기로 하고 이 실험은 취소했다. obstacle 4개는 향후 과제로 남긴다.
+
+## 2026-11-23 · E56. 화면에서 obstacle 상태를 읽는 탐지기 + obstacle별 h_int, 안 본 obstacle 개수로 일반화 (base 고정)
+
+**목적:** 정답 obstacle 입력은 CF-JEPA를 obstacle 2개에서 +10~12%p, 3개에서 +9.6%p 이긴다(E47~E54). E52에서 이 이득은 obstacle 속도가 2 px/step만 틀려도 사라졌다. label 없는 입력(E45~E50)은 latent에서 속도를 그만큼 정확히 꺼내지 못했다. 이번에는 화면에서 obstacle의 위치와 속도를 직접 읽는 탐지기를 학습해(학습 때만 obstacle label 사용), planning 때 정답 대신 탐지 결과를 h_int에 넣는다. 그리고 obstacle 2개로만 학습한 모델이 안 본 obstacle 3개에서도 이득을 내는지(개수 일반화) 잰다.
+
+**구현** (`src/iawm/obs_detector.py`, `scripts/train_obs_detector.py`)
+- **탐지기** `ObsDetector`: 연속된 두 화면(1 env step 간격)을 받아 obstacle 중심 heatmap(56×56, 4px 칸), 중심의 sub-pixel offset, 속도를 낸다(CenterNet 방식, focal loss + L1). 봉우리마다 obstacle 하나를 읽으므로 개수에 무관하고, obstacle이 모두 같은 모양이라 생기는 순서 문제가 없다. 화면 좌표 방향은 파란 픽셀 중심과 label을 비교해 정한다.
+- **예측기** `ObsForecaster`: obstacle 하나의 (위치, 속도)에서 5·d step 뒤(d = 1..6) 상태를 낸다(방 경계 반사 포함). label로만 학습한다.
+- **h_int 입력:** slot 4개 × [pos, vel, pos_next] + slot mask (28차원). pos_next는 예측기의 1 block 뒤 위치다.
+  - 학습 column(`train_int_frozen.py --oracle est --detector`): episode마다 1 step 간격으로 탐지를 이어(tracking) slot 순서를 맞춘다.
+  - planning(`eval.py +obs_detector=`): history frame 3장(5 step 간격)을 탐지하고, 예측기의 1 block 뒤 위치로 frame 사이 slot을 맞춘다. 미래 frame은 마지막 상태를 예측기로 굴린다.
+  - 계획 시점의 탐지를 env 정답과 비교해 `[obs est] plan-time` 오차를 남긴다.
+- **h_int:** obstacle별 구조(E53, weight 공유)에 slot mask를 더했다(`int_obj_mask`). 실행 중 obstacle 수를 입력 길이에서 정하므로, 2개로 학습한 정답 입력 모델도 3개에서 돌릴 수 있다.
+- **로컬 시험:**
+  - target을 그대로 넣었을 때 위치·속도 복원 오차가 1e-7이다.
+  - tracking은 순서가 섞이거나 한 frame을 놓쳐도 같은 slot을 유지한다.
+  - slot mask 4개 입력이 obstacle 2개 입력과 같은 출력을 낸다(3e-8).
+  - 합성 화면에서 300 step 학습만으로 위치 0.29px, 속도 0.79 px/step다.
+
+**설정:** base `e47_cf`, 위치 probe `pos_probe_e47_cf.pt`(E47), obstacle 2개, 반지름 22.
+- data: `r2f`(탐지기·예측기 학습, 1만 episode, seed 6262, h_int와 분리), `r2y`(h_int, seed 4242), `r2yt`(test, seed 777), `collision_tworoom`(planning 시작 상태), `r2dbg`(smoke).
+- 탐지기: `r2f` 앞쪽 1,200 episode의 frame 쌍으로 12,000 step 학습(batch 32, frame을 GPU에 올린다). 뒤쪽 100 episode로 잰다. 예측기는 `r2f` 전체 label로 학습한다.
+
+| 이름 | h_int 입력 | 역할 |
+|---|---|---|
+| `e47_cf` | 없음 | CF-JEPA |
+| `e56_est` | 탐지기가 화면에서 읽은 obstacle 상태 (학습도 탐지 결과로) | 제안 |
+| `e56_po` | 정답 obstacle 상태, obstacle별 h_int | 상한 |
+
+planning은 P2 + `+action_clip=true` + agent 위치 cost다. obstacle 2개는 seed 42~73(32개), 안 본 obstacle 3개는 seed 42~57(16개)이다. 모든 모델은 obstacle 2개 data로만 학습했다. CF-JEPA planning은 h_int 학습과 같은 시간에 같은 세션에서 잰다.
+
+**판정 (실행 전에 정함)**
+- **판정 1 (탐지기):** held-out 속도 오차(`RESULT_DET vel_mae`)가 2 px/step 미만이어야 h_int 학습과 planning을 한다(E52에서 2 px/step면 이득이 0이었다). 목표는 1 이하다.
+- **Q1 (주 질문):** obstacle 2개에서 `e56_est` − `e47_cf`가 +3%p 이상이고 표준오차의 2배 이상.
+- **Q3 (일반화):** obstacle 3개에서 `e56_est` − `e47_cf`가 같은 기준.
+- Q0: `e56_po` − `e47_cf`(2개, 3개). 참고: `e56_po` − `e56_est`(탐지 오차의 비용).
+- 해석 계획
+  - Q1 통과: label 없는 latent로는 못 낸 이득을, 화면에서 obstacle 상태를 직접 읽어 정답 없이 냈다. 학습 때 obstacle label을 쓴다는 점은 명시한다.
+  - Q1 미달, 판정 1 통과: 탐지가 정확해도 planning 이득이 없다. 계획 시점 탐지 오차와 미래 예측 오차(`RESULT_OBSFC`)로 원인을 나눈다.
+  - Q3 통과: obstacle별 구조와 개수 무관 탐지기로 안 본 개수에 일반화한다.
+
+**운영:** `outputs/e56/`(git 제외, 사본은 Proton Drive). smoke test는 탐지기 학습, 탐지기 column, 탐지기 입력 planning(obstacle 2개, 3개), 정답 입력 3개 planning을 작은 data로 확인한다. 큰 수집은 하나씩 한다(`r2f` 먼저, 그다음 `r2y`).
+- 실행: `systemd-run --user --unit=e56-run --collect --setenv=HOURS=12 bash "$PWD/outputs/e56/launch.sh"`
+
+**비용 상한:** L4 세션 1개, 기한 12시간, 24 CU. 예상은 수집 약 2시간 50분, 탐지기 약 40분, cache와 학습 약 1시간 20분, planning 약 4시간이다(CF-JEPA는 학습과 겹친다). 합계 약 9시간, 18 CU다.
+
+**실행 상태:** 사전 등록.

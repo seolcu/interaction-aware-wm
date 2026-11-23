@@ -42,6 +42,7 @@ swm.wm.utils.load_pretrained('<out>/weights_best.pt')로 불러 scripts/eval.py,
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -82,6 +83,9 @@ def gate_config(base_cfg: dict, args) -> dict:
         if args.per_object:  # E53
             assert args.oracle_parts == 'full'
             p.update(int_per_object=args.num_obstacles)
+    if args.oracle == 'est':  # E56: 탐지기가 화면에서 읽은 obstacle 상태 (slot K_MAX개 + mask), obstacle별 h_int
+        from iawm.obs_detector import K_MAX
+        p.update(int_oracle_dim=7 * K_MAX, int_oracle_key='obs_est', int_per_object=K_MAX, int_obj_mask=True)
     if args.oracle == 'forecast':
         d = p['dim_c'] + p['dim_u']
         p.update(int_oracle_dim=d * (2 if args.fc_anchor else 1) + (d if args.fc_motion else 0) + (N_TAGS if args.fc_depth_tag else 0),
@@ -125,8 +129,68 @@ def obs_part_columns(orc: np.ndarray, part: str, k: int) -> np.ndarray:
     return orc[:, :OBS_PARTS[part] * k]
 
 
+@torch.no_grad()
+def est_columns(f, detector: str, device, cache: Path | None, name: str, chunk=2000):
+    """E56: file의 모든 row에 대한 탐지기 입력 column (N, 7·K_MAX). cache가 있으면 읽는다.
+
+    row j는 (frame j-1, frame j)로 탐지한다. episode 첫 row는 앞 frame이 없어 (frame j+1, frame j)로 탐지하고
+    속도 부호를 뒤집는다. episode마다 1 step 간격으로 이어 slot 순서를 맞추고(track_episode), pos_next는 예측기의
+    1 block 뒤 위치다(planning의 iawm.obs_detector.plan_features와 같은 정의). 정답 label과의 오차를 RESULT_EST로 남긴다.
+    """
+    from iawm import obs_detector as od
+    if cache is not None and cache.exists():
+        col = np.load(cache)
+        if len(col) == len(f['pixels']):
+            print(f'est columns: cache {cache} ({col.shape})', flush=True)
+            return col
+    det, fc, meta = od.load(Path(os.environ.get('STABLEWM_HOME', Path.home() / '.stable-wm')) / 'checkpoints' / detector, device)
+    off, ep_len = episode_offsets(f)
+    n = len(f['pixels'])
+    first = np.zeros(n, bool)
+    first[off] = True
+    P = np.zeros((n, od.K_MAX, 2), np.float32)
+    V = np.zeros((n, od.K_MAX, 2), np.float32)
+    M = np.zeros((n, od.K_MAX), bool)
+    t0 = time.time()
+    for lo in range(0, n, chunk):
+        hi = min(n, lo + chunk)
+        a, b = max(0, lo - 1), min(n, hi + 1)
+        px = torch.from_numpy(f['pixels'][a:b]).to(device)
+        j = np.arange(lo, hi)
+        prev = np.where(first[j], j + 1, j - 1)
+        for s in range(0, len(j), 512):
+            jj, pp = j[s:s + 512], prev[s:s + 512]
+            pos, vel, msk = det.detect(px[pp - a], px[jj - a])
+            vel = torch.where(torch.from_numpy(first[jj]).to(device)[:, None, None], -vel, vel)
+            P[jj], V[jj], M[jj] = pos.cpu().numpy(), vel.cpu().numpy(), msk.cpu().numpy()
+        if (lo // chunk) % 50 == 0:
+            print(f'est columns: {hi}/{n} rows ({time.time() - t0:.0f}s)', flush=True)
+    for o, L in zip(off, ep_len):
+        P[o:o + L], V[o:o + L], M[o:o + L] = od.track_episode(P[o:o + L], V[o:o + L], M[o:o + L])
+    nxt = np.zeros_like(P)
+    for lo in range(0, n, 65536):
+        nxt[lo:lo + 65536] = od.forecast_np(fc, P[lo:lo + 65536], V[lo:lo + 65536], device)[..., 0, :2]
+    col = od.encode_slots(P, V, nxt, M)
+    # 정답과의 오차 (진단)
+    tp = np.nan_to_num(f['obstacle_pos'][:].astype(np.float32)).reshape(n, -1, 2)
+    tv = np.nan_to_num(f['obstacle_vel'][:].astype(np.float32)).reshape(n, -1, 2)
+    pe, ve, miss, fp = [], [], 0, 0
+    for j in np.random.default_rng(0).choice(n, min(n, 20000), replace=False):
+        a_, b_, m_, f_ = od.match_error(P[j], V[j], M[j], tp[j], tv[j])
+        pe += a_; ve += b_; miss += m_; fp += f_
+    k = tp.shape[1]
+    print(f'RESULT_EST {name} pos_mae {np.mean(pe):.3f} vel_mae {np.mean(ve):.3f} vel_p90 {np.quantile(ve, .9):.3f} '
+          f'miss {miss / (20000 * k):.4f} fp {fp / (20000 * k):.4f} slots_used {M.sum(1).mean():.2f} ({time.time() - t0:.0f}s)', flush=True)
+    if cache is not None:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache.with_name(f'{cache.stem}.tmp{int(time.time() * 1e6)}.npy')
+        np.save(tmp, col)
+        tmp.replace(cache)
+    return col
+
+
 def load_rows(model, path: Path, device, cache: Path | None, oracle: str, oracle_parts: str = 'full', k: int = 1,
-              noise: float = 0.0, noise_seed: int = 0):
+              noise: float = 0.0, noise_seed: int = 0, detector: str | None = None):
     """학습에 쓰는 row별 tensor를 GPU에 올린다. 정의는 analyze_gate.iter_clips, add_contact_labels와 같다."""
     import h5py
     import hdf5plugin  # noqa: F401
@@ -146,6 +210,9 @@ def load_rows(model, path: Path, device, cache: Path | None, oracle: str, oracle
             assert oracle_parts == 'full', '--oracle-noise는 full 입력에서만 쓴다 (planning도 full만 넣는다)'
             orc = obs_oracle.vel_noise(orc, noise, k, np.random.default_rng(noise_seed), FS)
             print(f'oracle velocity noise sigma {noise} px/step on {path.name} (seed {noise_seed})', flush=True)
+        if oracle == 'est':  # E56
+            orc = est_columns(f, detector, device, None if cache is None else cache.with_name(
+                f'est__{Path(detector).stem}__{path.stem}.npy'), path.name)
         pos = positions(f) if oracle == 'forecast' else None  # forecaster px 진단에만 쓴다(학습에는 쓰지 않는다)
     rows = {'z': torch.from_numpy(z).to(device), 'act': torch.from_numpy(act).to(device),
             'cn': torch.from_numpy(cn).to(device)}
@@ -422,7 +489,8 @@ def main():
     ap.add_argument('--data', required=True, help='학습 data (base가 학습에 쓰지 않은 것)')
     ap.add_argument('--test-data', default=None, help='최종 수치를 잴 따로 수집한 data')
     ap.add_argument('--out', required=True, help='출력 checkpoint 폴더 이름')
-    ap.add_argument('--oracle', default='none', choices=['none', 'obs', 'forecast'])
+    ap.add_argument('--oracle', default='none', choices=['none', 'obs', 'forecast', 'est'])
+    ap.add_argument('--detector', default=None, help='E56 --oracle est: 탐지기 checkpoint ($STABLEWM_HOME/checkpoints 기준)')
     ap.add_argument('--oracle-noise', type=float, default=0.0, help='E52: obs 입력의 속도 오차 표준편차 (px/step). planning에는 +oracle_noise로 같은 값을 준다')
     ap.add_argument('--per-object', action='store_true', help='E53: obstacle별로 같은 h_int를 돌려 보정을 더한다 (--oracle obs)')
     ap.add_argument('--oracle-parts', default='full', choices=list(OBS_PARTS), help='E45 진단: obs 입력 중 쓸 성분')
@@ -474,7 +542,7 @@ def main():
     model = model.to(device).eval()
     pr, d_c = model.predictor, model.dim_c
     print(f'base={args.base} loaded {len(sd)} tensors, new={len(missing)}, trainable={n_train / 1e6:.3f}M '
-          f'oracle={args.oracle} parts={args.oracle_parts} noise={args.oracle_noise} per_object={args.per_object} anchor={args.fc_anchor} motion={args.fc_motion} depth_tag={args.fc_depth_tag} int_input={args.int_input} depth={args.int_depth} '
+          f'oracle={args.oracle} parts={args.oracle_parts} noise={args.oracle_noise} per_object={args.per_object} detector={args.detector} anchor={args.fc_anchor} motion={args.fc_motion} depth_tag={args.fc_depth_tag} int_input={args.int_input} depth={args.int_depth} '
           f'hidden={args.int_hidden_dim}', flush=True)
 
     cache_dir = Path(args.cache_dir) if args.cache_dir else home / 'latent_cache'
@@ -486,7 +554,7 @@ def main():
     def rows_of(name):
         r, o, l = load_rows(model, home / 'datasets' / name, device, cache_dir / f'{tag}__{Path(name).stem}.npy',
                             args.oracle, args.oracle_parts, args.num_obstacles,
-                            args.oracle_noise, args.seed * 1000 + zlib.crc32(name.encode()) % 1000)
+                            args.oracle_noise, args.seed * 1000 + zlib.crc32(name.encode()) % 1000, args.detector)
         if fc is not None and fc_ready[0]:  # forecaster를 고정한 뒤 읽는 test data
             r['fc'] = forecast_columns(fc, r)
             if fc.anchor:
