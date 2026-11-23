@@ -32,6 +32,8 @@ from stable_worldmodel.wm.lewm import LeWM
 from stable_worldmodel.wm.lewm.module import MLP, Block, Predictor, Transformer
 from torch import nn
 
+from iawm.cfjepa import history_get_cost
+
 
 class GradientReversal(torch.autograd.Function):
     """forward는 그대로, backward는 gradient 부호를 뒤집는다 (Ganin & Lempitsky, 2015)."""
@@ -106,6 +108,25 @@ class FactorizedPredictor(nn.Module):
         b = x.size(0)
         return rearrange(proj(rearrange(x, 'b t d -> (b t) d')), '(b t) d -> b t d', b=b)
 
+    def _interaction_per_object(self, parts, act_emb, alpha):
+        """E53: obstacle k마다 [parts, oracle_k (6)]로 같은 h_int를 돌려 tanh 보정을 더한다. 반환은 interaction과 같다."""
+        K = self.int_per_object
+        base = torch.cat(parts, dim=-1)  # (B, T, D)
+        B, T = base.shape[:2]
+        if self.oracle is not None:
+            orc = self.oracle[:, :T].to(base.dtype).reshape(B, T, 3, K, 2)  # [pos, vel, pos_next] x K x (x, y)
+            orc = orc.permute(3, 0, 1, 2, 4).reshape(K, B, T, 6)           # obstacle k: [pos, vel, pos_next]
+        else:
+            orc = base.new_zeros(K, B, T, 6)
+        x = torch.cat([base.unsqueeze(0).expand(K, -1, -1, -1), orc], dim=-1).reshape(K * B, T, -1)
+        x = self.int_in(x)
+        a = act_emb.unsqueeze(0).expand(K, -1, -1, -1).reshape(K * B, T, -1)
+        h = self.h_int(torch.cat([x, a], dim=-1)) if self.int_arch == 'mlp' else self.h_int(x, a)
+        delta = (self.int_scale * torch.tanh(self.int_out(h))).reshape(K, B, T, -1).sum(0)
+        self.last_delta = delta
+        alpha_used = alpha.detach() if self.gate_isolated else alpha
+        return alpha_used * delta, alpha
+
     def forward(self, emb: torch.Tensor, act_emb: torch.Tensor) -> torch.Tensor:
         z_c, z_u = emb.split([self.dim_c, self.dim_u], dim=-1)
         T = emb.size(1)
@@ -153,6 +174,112 @@ class CFJEPA(LeWM):
         x = grad_reverse(torch.cat([z_u_t, z_u_next], dim=-1), self.grl_scale)
         return self.adversary_head(x)
 
+    def get_cost(self, info_dict: dict, action_candidates: torch.Tensor) -> torch.Tensor:
+        """E26 history cost에 contact 회피 항을 더한다 (E29).
+
+        contact_cost = λ > 0이고 gate가 켜져 있으면, 상상 rollout의 각 block에서 gate가 낸 α(다음 block에
+        충돌이 있을 확률로 학습됨)를 모아 cost += λ · d0 · Σ_k α_k 를 더한다. d0는 현재 z^c와 goal z^c의
+        거리라서 λ는 단위가 없다(λ = 1이면 충돌 block 하나가 지금 goal까지 거리만큼의 cost).
+        """
+        lam = float(getattr(self, 'contact_cost', 0.0) or 0.0)
+        pred = self.predictor
+        combine = getattr(self, 'plan_combine', None)
+        if combine and getattr(pred, 'gate_mode', 'off') != 'off':
+            # E34: gate를 켠 rollout과 끈 rollout의 cost를 같이 본다. max는 "interaction이 있어도 없어도
+            # goal에 가까운 plan"을 고른다(pessimistic). 상상 push가 유리하게 나온 plan을 CEM이 고르는 것을 막는다.
+            cost_on = history_get_cost(self, info_dict, action_candidates)
+            mode = pred.gate_mode
+            pred.gate_mode = 'off'
+            try:
+                cost_off = history_get_cost(self, info_dict, action_candidates)
+            finally:
+                pred.gate_mode = mode
+            if combine == 'max':
+                return torch.maximum(cost_on, cost_off)
+            if combine == 'mean':
+                return (cost_on + cost_off) / 2
+            raise ValueError(f'plan_combine={combine}')
+        if lam <= 0 or getattr(pred, 'gate_mode', 'off') == 'off':
+            return history_get_cost(self, info_dict, action_candidates)  # E26, iawm.cfjepa 참고
+        alphas = []
+        orig = pred.forward
+
+        def forward_rec(emb, act_emb):
+            out = orig(emb, act_emb)
+            alphas.append(pred.last_alpha[:, -1, 0])  # rollout은 window 마지막 위치의 예측만 쓴다
+            return out
+
+        pred.forward = forward_rec
+        try:
+            cost = history_get_cost(self, info_dict, action_candidates)
+        finally:
+            del pred.forward
+        B, S = cost.shape
+        a_sum = torch.stack(alphas, dim=-1).float().view(B, S, -1).sum(-1)
+        emb = info_dict['emb']  # (B, S, H, D)
+        goal_emb = info_dict['goal_emb']
+        if goal_emb.ndim == emb.ndim - 1:
+            goal_emb = goal_emb[:, None]
+        d0 = (emb[..., -1, : self.dim_c] - goal_emb[..., -1, : self.dim_c]).norm(dim=-1).float()  # (B, S)
+        return cost + (lam * d0 * a_sum).to(cost.dtype)
+
+    def rollout(self, info, action_sequence, history_size: int = None):
+        """LeWM.rollout + 정답 obstacle 상태 (E39).
+
+        E45: int_oracle_key가 'forecast'이면 forecaster로 같은 모양의 info['forecast']를 만들어 같은 길로 넣는다.
+        info에 'obs_oracle' (B, S, F, D)가 있고 predictor가 oracle 입력을 받으면(int_oracle_dim > 0),
+        예측할 때마다 그 window의 frame에 해당하는 값을 predictor.oracle에 넣는다. LeWM.rollout의 t번째
+        예측은 frame lo..lo+HS-1 (lo = max(0, H + t - HS))을 입력으로 쓴다. 없으면 LeWM.rollout과 같다.
+        """
+        pred = self.predictor
+        HS = history_size if history_size is not None else getattr(pred, 'num_frames', 3)
+        H = info['pixels'].size(2)
+        key = getattr(pred, 'int_oracle_key', 'obs_oracle')
+        if (key == 'forecast' and getattr(pred, 'forecaster', None) is not None and getattr(pred, 'int_oracle_dim', 0) > 0
+                and getattr(pred, 'gate_mode', 'off') != 'off' and 'forecast' not in info):
+            # E45: history latent에서 forecaster를 굴려 frame마다의 feature를 만든다. action과 무관하므로 후보 전체가
+            # 같은 값을 쓰고, 같은 계획의 CEM 반복 동안 info에 남겨 다시 쓴다(LeWM.rollout의 'emb' cache와 같다).
+            B, S, T = action_sequence.shape[:3]
+            if 'emb' not in info:  # LeWM.rollout과 같은 방법으로 history를 encoding해 둔다(rollout이 그대로 다시 쓴다)
+                _init = {k: v[:, 0] for k, v in info.items() if torch.is_tensor(v) and k not in ('action', 'pixels_prev')}
+                _init = self.encode(_init)
+                info['emb'] = _init['emb'].detach().unsqueeze(1).expand(B, S, -1, -1)
+            prev = None
+            if getattr(pred.forecaster, 'motion', False):  # E50: history frame마다 1 env step 전 frame (eval.py HistoryPolicy가 넣는다)
+                assert 'pixels_prev' in info, 'motion 입력 모델은 info에 pixels_prev가 있어야 한다 (+plan_history와 HistoryPolicy)'
+                pp = info['pixels_prev']
+                pp = pp[:, 0] if pp.dim() == info['pixels'].dim() else pp
+                prev = self.encode({'pixels': pp})['emb'].detach().float()
+            feat = pred.forecaster.plan_features(info['emb'][:, 0].float(), T, prev)  # frame 0 .. H + n_steps - 1 (T = H + n_steps)
+            info['forecast'] = feat[:, None].expand(B, S, -1, -1)
+            if not getattr(pred, '_fc_logged', False):  # smoke test가 확인하는 줄 (한 번만)
+                pred._fc_logged = True
+                print('[plan forecast] features', tuple(info['forecast'].shape), flush=True)
+        orc = info.get(key) if getattr(pred, 'int_oracle_dim', 0) > 0 else None
+        if orc is None or getattr(pred, 'gate_mode', 'off') == 'off':
+            return super().rollout(info, action_sequence, history_size)
+        orc = orc.to(device=action_sequence.device, dtype=action_sequence.dtype).flatten(0, 1)  # (BS, F, D)
+        assert orc.size(-1) == pred.int_oracle_dim, (orc.shape, pred.int_oracle_dim)
+        had = 'forward' in pred.__dict__  # 다른 wrapper(E29 contact cost, E37 α 기록)가 이미 감싸고 있을 수 있다
+        orig, calls = pred.forward, [0]
+
+        def forward_orc(emb, act_emb):
+            lo = max(0, H + calls[0] - HS)
+            calls[0] += 1
+            pred.oracle = orc[:, lo:lo + emb.size(1)]
+            assert pred.oracle.size(1) == emb.size(1), (orc.shape, lo, emb.shape)
+            return orig(emb, act_emb)
+
+        pred.forward = forward_orc
+        try:
+            return super().rollout(info, action_sequence, history_size)
+        finally:
+            if had:
+                pred.forward = orig
+            else:
+                del pred.forward
+            pred.oracle = None
+
     def criterion(self, info_dict: dict) -> torch.Tensor:
         """z^c만으로 cost를 계산한다. 반환: (B, S)."""
         pred_c = info_dict['predicted_emb'][..., : self.dim_c]  # (B, S, T, d_c)
@@ -160,6 +287,9 @@ class CFJEPA(LeWM):
         if goal_emb.ndim == pred_c.ndim - 1:  # get_cost가 만든 goal_emb는 (B, T, D)다
             goal_emb = goal_emb[:, None]
         goal_c = goal_emb[..., -1:, : self.dim_c].detach()  # (B, 1|S, 1, d_c)
+        if self.cost == 'agent_px':  # E40 진단: z^c에서 읽은 agent 위치의 거리 (iawm.pos_probe)
+            from iawm.pos_probe import agent_px_cost
+            return agent_px_cost(self, info_dict)
         if self.cost == 'sum_l2':  # 논문 Eq. 7
             return (pred_c - goal_c).norm(dim=-1).sum(dim=-1)
         # LeWM 방식: 마지막 step의 squared error
@@ -227,7 +357,11 @@ class InteractionGatedPredictor(FactorizedPredictor):
         gate_init_bias: float = 0.0,
         gate_objective: str = 'sparsity',
         int_oracle_dim: int = 0,
+        int_oracle_key: str = 'oracle_state',
         int_arch: str = 'transformer',
+        int_input: str = 'state',
+        forecaster_cfg: dict | None = None,
+        int_per_object: int = 0,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -247,9 +381,32 @@ class InteractionGatedPredictor(FactorizedPredictor):
         # int_oracle_dim > 0 (E16 진단): h_int 입력에 정답 state(agent·obstacle 위치·속도)를 덧붙인다.
         # 학습 전에 train.py가 `self.oracle` (B, T, int_oracle_dim)을 채운다. planning 때는 미래 state를
         # 알 수 없으므로 이 설정은 예측 오차 진단 전용이다(oracle이 없으면 0으로 채운다).
+        # int_oracle_key (E39): oracle 값의 종류. 'oracle_state'는 E16의 agent·obstacle state(학습 data column,
+        # 예측 진단 전용)이고, 'obs_oracle'은 obstacle만의 상태(iawm.obs_oracle)라서 planning 중에도 env에서
+        # 정확히 계산해 넣을 수 있다(CFJEPA.rollout 참고).
         self.int_oracle_dim = int_oracle_dim
+        self.int_oracle_key = int_oracle_key
         self.oracle: torch.Tensor | None = None
-        self.int_in = nn.Linear(d_c + d_u + int_oracle_dim, d_c)
+        # forecaster_cfg (E45): action 없이 다음 block latent를 예측하는 forecaster(iawm.forecaster). int_oracle_key가
+        # 'forecast'이면 그 예측을 정답 obstacle 입력 자리에 넣는다. 학습은 scripts/train_int_frozen.py가 따로 한다.
+        self.forecaster = None
+        if forecaster_cfg is not None:
+            from iawm.forecaster import Forecaster
+            self.forecaster = Forecaster(**dict(forecaster_cfg))
+        # int_input='resolve' (E30): h_int와 gate 입력에 g의 예측(push 전 다음 z^c)과 h의 예측(다음 z^u)을
+        # 더한다(detach). env가 "각자 움직인 뒤 겹치면 밀어낸다"로 동작하므로, 충돌 해소를 두 factor의
+        # 독립 예측 위에서 하게 한다. 'state'는 기존 입력([z^c, z^u])이다.
+        assert int_input in ('state', 'resolve')
+        self.int_input = int_input
+        extra = d_c + d_u if int_input == 'resolve' else 0
+        # int_per_object = K > 0 (E53): 정답 obstacle 입력(iawm.obs_oracle, [pos (2K), vel (2K), pos_next (2K)])을
+        # obstacle별 6차원으로 나눠, 같은 h_int(weight 공유)를 obstacle마다 한 번씩 돌리고 보정을 더한다.
+        # obstacle 순서와 개수에 무관한 구조다. gate α는 그대로 scalar 하나다.
+        self.int_per_object = int(int_per_object)
+        if self.int_per_object:
+            assert int_oracle_dim == 6 * self.int_per_object, (int_oracle_dim, self.int_per_object)
+        orc_in = 6 if self.int_per_object else int_oracle_dim
+        self.int_in = nn.Linear(d_c + d_u + orc_in + extra, d_c)
         # int_arch='mlp' (E20 후보): AdaLN-zero transformer 대신 frame별 3층 MLP. transformer는 블록 gate와
         # int_out이 모두 0에서 시작해 작은 lr에서 거의 움직이지 않는다는 의심을 확인하려고 둔다.
         self.int_arch = int_arch
@@ -275,7 +432,7 @@ class InteractionGatedPredictor(FactorizedPredictor):
         nn.init.zeros_(self.int_out.weight)
         nn.init.zeros_(self.int_out.bias)
 
-        self.gate = two_layer_mlp(d_c + 2 * d_u + d_c, gate_hidden_dim, 1)
+        self.gate = two_layer_mlp(d_c + 2 * d_u + d_c + extra, gate_hidden_dim, 1)
         nn.init.constant_(self.gate[-1].bias, gate_init_bias)
 
         self.last_alpha: torch.Tensor | None = None
@@ -283,13 +440,14 @@ class InteractionGatedPredictor(FactorizedPredictor):
         self.last_pred_c_base: torch.Tensor | None = None
         self.last_delta: torch.Tensor | None = None
 
-    def interaction(self, z_c, z_u, act_emb):
-        """α · h_int. 반환: (B, T, d_c), α (B, T, 1)."""
+    def interaction(self, z_c, z_u, act_emb, indep=None):
+        """α · h_int. 반환: (B, T, d_c), α (B, T, 1). indep: resolve일 때 [g 예측, h 예측] (B, T, d_c + d_u)."""
         if self.zu_stopgrad:
             z_u = z_u.detach()
         if self.gate_mode == 'learned':
             dz_u = torch.cat([torch.zeros_like(z_u[:, :1]), z_u[:, 1:] - z_u[:, :-1]], dim=1)
-            gate_in = torch.cat([z_c, z_u, dz_u, act_emb], dim=-1)
+            gate_parts = [z_c, z_u, dz_u, act_emb] + ([indep] if indep is not None else [])
+            gate_in = torch.cat(gate_parts, dim=-1)
             if self.gate_isolated:
                 gate_in = gate_in.detach()
             logit = self.gate(gate_in)
@@ -298,7 +456,9 @@ class InteractionGatedPredictor(FactorizedPredictor):
         else:
             alpha = z_c.new_ones(*z_c.shape[:2], 1)
             self.last_logit = None
-        parts = [z_c, z_u]
+        parts = [z_c, z_u] + ([indep] if indep is not None else [])
+        if self.int_per_object:
+            return self._interaction_per_object(parts, act_emb, alpha)
         if self.int_oracle_dim > 0:
             T = z_c.size(1)
             if self.oracle is not None:
@@ -322,6 +482,7 @@ class InteractionGatedPredictor(FactorizedPredictor):
             self.last_alpha = z_c.new_zeros(*z_c.shape[:2], 1)
             self.last_logit = self.last_delta = None
         else:
-            corr, self.last_alpha = self.interaction(z_c, z_u, act_emb)
+            indep = torch.cat([pred_c, pred_u], dim=-1).detach() if self.int_input == 'resolve' else None
+            corr, self.last_alpha = self.interaction(z_c, z_u, act_emb, indep)
             pred_c = pred_c + corr
         return torch.cat([pred_c, pred_u], dim=-1)

@@ -11,6 +11,7 @@
 """
 
 import os
+import re
 import sys
 from functools import partial
 from pathlib import Path
@@ -70,6 +71,8 @@ def world_model_forward(self, batch, stage, cfg):
     batch['action'] = torch.nan_to_num(batch['action'], 0.0)
 
     add_distractors(batch, cfg, epoch=self.current_epoch if self.training else None)
+    if self.training and cfg.get('freeze_base', False):
+        freeze_base_eval(self.model)
     output = self.model.encode(batch)
     emb = output['emb']  # (B, T, D)
     act_emb = output['act_emb']
@@ -79,7 +82,8 @@ def world_model_forward(self, batch, stage, cfg):
     if getattr(pr_, 'int_oracle_dim', 0) > 0:
         pr_.oracle = torch.nan_to_num(batch['oracle_state'].float(), 0.0)
     pred_emb = self.model.predict(emb[:, :ctx_len], act_emb[:, :ctx_len])
-    tgt_emb = emb[:, n_preds:]
+    # E25: rollout_steps > 0이면 clip이 history보다 길다. 1-step loss는 앞쪽 history 구간만 쓴다.
+    tgt_emb = emb[:, n_preds:ctx_len + n_preds]
 
     output['fwd_loss'] = (pred_emb - tgt_emb).pow(2).mean()
     output['sigreg_loss'] = self.sigreg(emb.transpose(0, 1))
@@ -180,12 +184,63 @@ def world_model_forward(self, batch, stage, cfg):
         )
     # ---- [interaction gate] 추가 끝 ---------------------------------------------------
 
+    # ---- [여러 step 예측 loss] E25 ----------------------------------------------------
+    # 1-step 예측만 학습하면 planning처럼 자기 예측을 이어 붙일 때의 오차는 직접 줄이지 않는다.
+    # history 이후 K frame을 planner와 같은 방식(최근 history개 latent로 다음 latent 예측)으로
+    # 이어 붙여 예측한다. gate의 last_* 값을 덮어쓰므로 gate 블록 뒤에 둔다.
+    k_roll = cfg.loss.get('rollout_steps', 0)
+    if k_roll > 0:
+        assert emb.size(1) >= ctx_len + k_roll, 'data.dataset.num_steps는 history_size + rollout_steps 이상이어야 한다'
+        window = emb[:, :ctx_len]
+        errs = []
+        for k in range(k_roll):
+            next_emb = self.model.predict(window, act_emb[:, k:k + ctx_len])[:, -1:]
+            errs.append((next_emb - emb[:, ctx_len + k:ctx_len + k + 1]).pow(2).mean())
+            window = torch.cat([window[:, 1:], next_emb], dim=1)
+        output['rollout_loss'] = torch.stack(errs).mean()
+        loss = loss + cfg.loss.get('rollout_weight', 1.0) * output['rollout_loss']
+    # ---- [여러 step 예측 loss] 끝 -----------------------------------------------------
+
     output['loss'] = loss
     self.log_dict(
         {f'{stage}/{k}': v.detach() for k, v in output.items() if 'loss' in k},
         on_step=True, sync_dist=True,
     )
     return output
+
+
+INT_RE = re.compile(r'^predictor\.(h_int|int_in|int_out|gate)(\.|$)')
+
+
+def init_base(world_model, cfg):
+    """E35: `+init_from=<checkpoints 아래 경로>`로 학습된 CF-JEPA weights를 gate 모델에 넣는다.
+
+    gate 모델의 parameter는 CF-JEPA parameter에 h_int, int_in, int_out, gate를 더한 것이다(E33에서 확인).
+    `+freeze_base=true`면 이 넷만 학습한다. 그러면 gate를 끈 모델은 CF-JEPA와 정확히 같고,
+    gate를 켰을 때의 차이가 interaction module만의 효과다.
+    """
+    src = cfg.get('init_from')
+    if src:
+        path = Path(swm.data.utils.get_cache_dir(sub_folder='checkpoints'), src)
+        sd = torch.load(path, map_location='cpu', weights_only=True)
+        missing, unexpected = world_model.load_state_dict(sd, strict=False)
+        bad = [k for k in missing if not INT_RE.match(k)]
+        assert not unexpected and not bad, f'init_from mismatch: unexpected={unexpected[:5]} missing={bad[:5]}'
+        print(f'init_from={src} loaded {len(sd)} tensors, new={len(missing)}')
+    if cfg.get('freeze_base', False):
+        assert src, 'freeze_base는 init_from과 같이 쓴다'
+        n = 0
+        for name, p in world_model.named_parameters():
+            p.requires_grad_(bool(INT_RE.match(name)))
+            n += p.numel() if p.requires_grad else 0
+        print(f'freeze_base: trainable params={n / 1e6:.3f}M')
+
+
+def freeze_base_eval(model):
+    """고정한 부분은 학습 중에도 eval mode로 둔다(dropout 끄기, BatchNorm 통계 고정). 학습하는 넷은 그대로 둔다."""
+    for name, m in model.named_modules():
+        if name and not INT_RE.match(name):
+            m.eval()
 
 
 def build_optim(cfg):
@@ -245,6 +300,7 @@ def run(cfg):
 
     pl.seed_everything(cfg.seed)
     world_model = hydra.utils.instantiate(cfg.model)
+    init_base(world_model, cfg)
     n_params = sum(p.numel() for p in world_model.parameters())
     print(f'model={cfg.model_kind} params={n_params / 1e6:.2f}M distractors={cfg.distractor.num}')
 

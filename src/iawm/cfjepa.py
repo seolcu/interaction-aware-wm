@@ -50,6 +50,23 @@ def grad_reverse(x: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
     return GradientReversal.apply(x, scale)
 
 
+def history_get_cost(model: LeWM, info_dict: dict, action_candidates: torch.Tensor) -> torch.Tensor:
+    """LeWM.get_cost + planning history (E26).
+
+    stable-worldmodel의 planning은 현재 frame 1장만 넣는다(`PlanConfig.history_len`은 쓰이지 않는다).
+    그러면 한 장의 사진으로는 obstacle의 움직임 방향을 알 수 없다. scripts/eval.py의 `+plan_history=3`은
+    info의 pixels에 과거 frame을 넣고(B, T=3, ...), 그 사이에 실행한 action block을 `hist_action`
+    (B, S, T-1, A)로 넣는다. LeWM.rollout은 action_sequence의 앞 T개를 history frame의 action으로 쓰므로,
+    과거 action을 후보 앞에 붙이면 history T frame + 후보 horizon step을 그대로 예측한다.
+    `hist_action`이 없으면 LeWM.get_cost와 같다.
+    """
+    hist = info_dict.get('hist_action')
+    if hist is not None:
+        hist = hist.to(device=action_candidates.device, dtype=action_candidates.dtype)
+        action_candidates = torch.cat([hist, action_candidates], dim=2)
+    return LeWM.get_cost(model, info_dict, action_candidates)
+
+
 def two_layer_mlp(in_dim: int, hidden: int, out_dim: int) -> nn.Module:
     return nn.Sequential(nn.Linear(in_dim, hidden), nn.GELU(), nn.Linear(hidden, out_dim))
 
@@ -153,6 +170,9 @@ class CFJEPA(LeWM):
         x = grad_reverse(torch.cat([z_u_t, z_u_next], dim=-1), self.grl_scale)
         return self.adversary_head(x)
 
+    def get_cost(self, info_dict: dict, action_candidates: torch.Tensor) -> torch.Tensor:
+        return history_get_cost(self, info_dict, action_candidates)
+
     def criterion(self, info_dict: dict) -> torch.Tensor:
         """z^c만으로 cost를 계산한다. 반환: (B, S)."""
         pred_c = info_dict['predicted_emb'][..., : self.dim_c]  # (B, S, T, d_c)
@@ -160,6 +180,9 @@ class CFJEPA(LeWM):
         if goal_emb.ndim == pred_c.ndim - 1:  # get_cost가 만든 goal_emb는 (B, T, D)다
             goal_emb = goal_emb[:, None]
         goal_c = goal_emb[..., -1:, : self.dim_c].detach()  # (B, 1|S, 1, d_c)
+        if self.cost == 'agent_px':  # E40 진단: z^c에서 읽은 agent 위치의 거리 (iawm.pos_probe)
+            from iawm.pos_probe import agent_px_cost
+            return agent_px_cost(self, info_dict)
         if self.cost == 'sum_l2':  # 논문 Eq. 7
             return (pred_c - goal_c).norm(dim=-1).sum(dim=-1)
         # LeWM 방식: 마지막 step의 squared error

@@ -16,6 +16,11 @@ E16에서 정답 state를 h_int에 넣어도 contact 구간 이득이 1.4%에 �
 - mlp_latent: frame별 MLP, 입력 [z^c, z^u, action] (정답 state 없음)
 - mlp_oracle_only: frame별 MLP, 입력 [oracle, action]
 
+E30에서 더한 것 (정답 state 없는 data도 쓴다. oracle_state column이 없으면 oracle head는 건너뛴다):
+- tf_resolve / mlp_resolve: 입력에 g의 예측(base, push 전 agent 위치)과 h의 예측(다음 z^u, obstacle이 갈 곳)을 더한다.
+  env가 "각자 움직인 뒤 겹치면 밀어낸다"로 동작하듯, 충돌 해소를 각 factor의 독립 예측 위에서 하게 한다.
+- mlp_resolve_true_u: h의 예측 대신 실제 다음 z^u를 넣는다(obstacle 예측이 완벽할 때의 상한).
+
 사용:
     python scripts/fit_hint_frozen.py --ckpt e16_oracle/weights_epoch_4.pt --data collision_tworoom_contact.h5
 """
@@ -39,7 +44,7 @@ def extract(model, f, episodes, device, oracle, batch=256, distractors=2, frames
     act_mean, act_std = action_stats(f)
     pr = model.predictor
     d_c = model.dim_c
-    keys = ('zc', 'zu', 'act', 'base', 'tgt', 'orc', 'own', 'lab')
+    keys = ('zc', 'zu', 'act', 'base', 'tgt', 'orc', 'own', 'lab', 'pu', 'tgt_u')
     out = {k: [] for k in keys}
     bufs = {'px': [], 'act': [], 'lab': [], 'orc': []}
 
@@ -62,13 +67,15 @@ def extract(model, f, episodes, device, oracle, batch=256, distractors=2, frames
             emb, act_emb = o['emb'], o['act_emb']
             if getattr(pr, 'int_oracle_dim', 0) > 0:
                 pr.oracle = orc[i:i + batch]
-            model.predict(emb[:, :history], act_emb[:, :history])
+            pred = model.predict(emb[:, :history], act_emb[:, :history])
             z = emb[:, :history].float()
             out['zc'].append(z[..., :d_c].cpu()); out['zu'].append(z[..., d_c:].cpu())
             out['act'].append(act_emb[:, :history].float().cpu())
             out['base'].append(pr.last_pred_c_base.float().cpu())
             out['own'].append(pr.last_delta.float().cpu())
             out['tgt'].append(emb[:, 1:history + 1, :d_c].float().cpu())
+            out['pu'].append(pred[..., d_c:].float().cpu())
+            out['tgt_u'].append(emb[:, 1:history + 1, d_c:].float().cpu())
             out['orc'].append(orc[i:i + batch, :history].float().cpu())
             out['lab'].append(torch.from_numpy(lab[i:i + batch]))
 
@@ -155,9 +162,13 @@ def main():
     scale = getattr(model.predictor, 'int_scale', 1.0)
     path = Path(swm.data.utils.get_cache_dir()) / 'datasets' / args.data
     with h5py.File(path, 'r') as f:
-        o_all = f['oracle_state'][:].astype(np.float64)
-        ok = o_all[~np.isnan(o_all).any(axis=1)]
-        oracle = np.nan_to_num(((o_all - ok.mean(0)) / ok.std(0, ddof=1)).astype(np.float32), nan=0.0)
+        has_oracle = 'oracle_state' in f
+        if has_oracle:
+            o_all = f['oracle_state'][:].astype(np.float64)
+            ok = o_all[~np.isnan(o_all).any(axis=1)]
+            oracle = np.nan_to_num(((o_all - ok.mean(0)) / ok.std(0, ddof=1)).astype(np.float32), nan=0.0)
+        else:
+            oracle = np.zeros((len(f['action']), 8), dtype=np.float32)
         n_ep = len(f['ep_len'])
         tr = extract(model, f, range(0, args.train_episodes), device, oracle, distractors=args.distractors)
         te = extract(model, f, range(n_ep - args.test_episodes, n_ep), device, oracle, distractors=args.distractors)
@@ -174,7 +185,12 @@ def main():
         'mlp_oracle': (lambda: FrameMLP(d_c + d_u + 8 + d_c, d_c), lambda b: [b['zc'], b['zu'], b['orc'], b['act']]),
         'mlp_latent': (lambda: FrameMLP(d_c + d_u + d_c, d_c), lambda b: [b['zc'], b['zu'], b['act']]),
         'mlp_oracle_only': (lambda: FrameMLP(8 + d_c, d_c), lambda b: [b['orc'], b['act']]),
+        'tf_resolve': (lambda: TFHead(2 * (d_c + d_u), d_c), lambda b: [b['zc'], b['zu'], b['base'], b['pu']]),
+        'mlp_resolve': (lambda: FrameMLP(2 * (d_c + d_u) + d_c, d_c), lambda b: [b['zc'], b['zu'], b['base'], b['pu'], b['act']]),
+        'mlp_resolve_true_u': (lambda: FrameMLP(2 * (d_c + d_u) + d_c, d_c), lambda b: [b['zc'], b['zu'], b['base'], b['tgt_u'], b['act']]),
     }
+    if not has_oracle:
+        heads = {k: v for k, v in heads.items() if 'oracle' not in k}
     if args.heads:
         heads = {k: v for k, v in heads.items() if k in args.heads.split(',')}
     for lr in [float(x) for x in args.lrs.split(',')]:

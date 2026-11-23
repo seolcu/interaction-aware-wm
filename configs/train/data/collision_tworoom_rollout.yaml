@@ -1,0 +1,14 @@
+# Collision TwoRoom + contact 라벨, clip을 6 frame으로 늘린 설정 (E25 여러 step 예측 loss).
+# num_steps = history_size(3) + loss.rollout_steps(3). data 준비는 collision_tworoom_contact.yaml과 같다.
+dataset:
+  num_steps: 6
+  frameskip: 5
+  name: collision_tworoom_contact.h5
+  keys_to_load:
+    - pixels
+    - action
+    - proprio
+    - contact_next
+  keys_to_cache:
+    - action
+    - proprio

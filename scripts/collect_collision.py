@@ -91,6 +91,7 @@ def main():
     ap.add_argument('--seed', type=int, default=3072)  # 원래 TwoRoom 수집 config와 같은 값
     ap.add_argument('--num-obstacles', type=int, default=1)
     ap.add_argument('--spawn', default='crossing', choices=['crossing', 'random'])
+    ap.add_argument('--obstacle-radius', type=float, default=14.0)  # E27: 평가 조건 r3b(22)와 맞춘 data
     ap.add_argument('--name', default='collision_tworoom')
     args = ap.parse_args()
 
@@ -101,6 +102,7 @@ def main():
         max_episode_steps=100,
         num_obstacles=args.num_obstacles,
         spawn_mode=args.spawn,
+        obstacle_radius=args.obstacle_radius,
     )
     world.set_policy(ExpertPolicy(action_noise=2.0, action_repeat_prob=0.05, seed=args.seed))
 

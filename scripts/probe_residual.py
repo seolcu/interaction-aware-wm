@@ -32,7 +32,7 @@ from probe_latent import agent_pos, mlp_fit_predict
 NUM_STEPS, FS, HIST = 4, 5, 3
 
 
-def clip_rows(f, episodes, act_mean, act_std):
+def clip_rows(f, episodes, act_mean, act_std, obs_col=None):
     """episode마다 clip(시작 row s, 5 step 간격)을 만든다. 마지막 transition(frame s+10 -> s+15)이 대상이다."""
     off, ep_len = episode_offsets(f)
     span = NUM_STEPS * FS
@@ -56,16 +56,19 @@ def clip_rows(f, episodes, act_mean, act_std):
             obs[t], vel[t],                                              # obstacle 위치·속도 t
             act[t[:, None] + np.arange(FS)[None]].reshape(len(starts), -1),  # action t..t+4
         ], 1)
+        oo = obs_col[o + t] if obs_col is not None else np.zeros((len(starts), 0), np.float32)
         yield (px[fr], act[starts[:, None] + np.arange(span)[None]].reshape(len(starts), NUM_STEPS, -1),
-               lab, oracle, np.full(len(starts), ep))
+               lab, oracle, np.full(len(starts), ep), oo)
 
 
 @torch.no_grad()
 def collect(model, f, episodes, device, batch=128):
     act_mean, act_std = action_stats(f)
     d_c = model.dim_c
-    Z, R, A, LAB, ORC, EP = [], [], [], [], [], []
-    for px, act, lab, orc, ep in clip_rows(f, episodes, act_mean, act_std):
+    from iawm import obs_oracle
+    obs_col = obs_oracle.dataset_column(f, FS)  # E38: h_int에 정답 obstacle을 줄 때와 같은 값 (E39 입력)
+    Z, R, A, LAB, ORC, EP, OO = [], [], [], [], [], [], []
+    for px, act, lab, orc, ep, oo in clip_rows(f, episodes, act_mean, act_std, obs_col):
         for i in range(0, len(px), batch):
             a = torch.from_numpy(act[i:i + batch]).to(device)
             out = model.encode({'pixels': to_model_pixels(px[i:i + batch], device), 'action': a})
@@ -76,8 +79,8 @@ def collect(model, f, episodes, device, batch=128):
             R.append((emb[:, HIST, :d_c].float() - base).cpu().numpy())
             Z.append(emb[:, :HIST].float().cpu().numpy())                 # (b, 3, 192)
             A.append(a[:, HIST - 1].cpu().numpy())                          # action t..t+4 (10)
-        LAB.append(lab), ORC.append(orc), EP.append(ep)
-    return tuple(map(np.concatenate, (Z, R, A, LAB, ORC, EP)))
+        LAB.append(lab), ORC.append(orc), EP.append(ep), OO.append(oo)
+    return tuple(map(np.concatenate, (Z, R, A, LAB, ORC, EP, OO)))
 
 
 def main():
@@ -101,7 +104,7 @@ def main():
     with h5py.File(path, 'r') as f:
         n_ep = len(f['ep_len'])
         episodes = range(max(0, n_ep - args.episodes), n_ep)
-        Z, R, A, lab, orc, ep = collect(model, f, episodes, device, args.batch)
+        Z, R, A, lab, orc, ep, oo = collect(model, f, episodes, device, args.batch)
 
     eps = np.unique(ep)
     te = np.isin(ep, eps[int(0.8 * len(eps)):])
@@ -110,6 +113,7 @@ def main():
     inputs = {
         'zc': np.concatenate([Z[:, :, :d_c].reshape(n, -1), A], 1),
         'zc+zu': np.concatenate([Z.reshape(n, -1), A], 1),
+        'zc+zu+obs': np.concatenate([Z.reshape(n, -1), A, oo], 1),  # latent + 정답 obstacle (E39의 h_int가 보는 정보)
         'oracle': orc,
     }
     rm, rs = R[tr].mean(0), R[tr].std(0) + 1e-8
@@ -137,6 +141,27 @@ def main():
         e1 = ((R[te] - pred) ** 2).mean(1)
         red = lambda m, base: 1 - e1[m].sum() / base[m].sum()  # noqa: E731
         print(f'{name:10s}{red(~c, e0):>12.3f} / {red(~c, e_const):<7.3f}{red(c, e0):>10.3f} / {red(c, e_const):<7.3f}')
+        print(f'RESULT_B {name} noncontact {red(~c, e_const):.4f} contact {red(c, e_const):.4f}')  # pipeline이 읽는 줄
+
+    # E38: history 3 frame의 latent에서 state를 얼마나 정밀하게 읽을 수 있는가 (px, px/step).
+    # 한 frame으로는 속도를 알 수 없으므로 모델이 보는 것과 같은 3 frame을 넣는다.
+    k2 = (orc.shape[1] - 6 - A.shape[1]) // 2  # obstacle 위치 차원 (2K)
+    state = {'agent 위치 (px)': orc[:, 4:6], 'obstacle 위치 (px)': orc[:, 6:6 + k2][:, :2],
+             'obstacle 속도 (px/step)': orc[:, 6 + k2:6 + 2 * k2][:, :2]}
+    lat = {'zc': Z[:, :, :d_c].reshape(n, -1), 'zu': Z[:, :, d_c:].reshape(n, -1), 'zc+zu': Z.reshape(n, -1)}
+    print('state probe: 3 frame latent -> 마지막 frame의 state. 값은 2D 오차의 평균 (non-contact / contact transition)')
+    print(f'{"target":26s}' + ''.join(f'{k:>18s}' for k in lat) + f'{"(값의 표준편차)":>18s}')
+    for tname, Y in state.items():
+        ym, ys = Y[tr].mean(0), Y[tr].std(0) + 1e-6
+        cells = ''
+        for lname, X in lat.items():
+            mu, sd = X[tr].mean(0), X[tr].std(0) + 1e-6
+            P = mlp_fit_predict(((X[tr] - mu) / sd).astype(np.float32), ((Y[tr] - ym) / ys).astype(np.float32),
+                                ((X[te] - mu) / sd).astype(np.float32), device, steps=args.steps, hidden=512) * ys + ym
+            d = np.sqrt(((P - Y[te]) ** 2).sum(1))
+            cells += f'{d[~c].mean():>9.2f} / {d[c].mean():<6.2f}'
+            print(f'RESULT_STATE {tname.split(" (")[0].replace(" ", "_")} {lname} noncontact {d[~c].mean():.3f} contact {d[c].mean():.3f}')
+        print(f'{tname:26s}{cells}{np.sqrt((Y[te].std(0) ** 2).sum()):>14.2f}')
 
 
 if __name__ == '__main__':

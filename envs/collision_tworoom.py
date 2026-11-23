@@ -188,6 +188,23 @@ class CollisionTwoRoomEnv(TwoRoomEnv):
                 pos = self.obstacle_pos[i] + n * (min_d + 0.5)
         return pos, contact
 
+    def render_past(self, steps_back: int) -> np.ndarray:
+        """episode 시작 `steps_back` step 전의 화면 (E26, planning history용).
+
+        "agent가 시작 위치에 멈춘 채 obstacle을 지켜보았다"고 보고, obstacle만 속도를 뒤집어 거꾸로
+        움직인 위치에 그린다. 반사도 거꾸로 하면 원래 궤적과 같다. 상태(위치, 속도)는 바꾸지 않는다.
+        """
+        if self.obstacle_pos.shape[0] == 0 or steps_back <= 0:
+            return self.render()
+        pos0, vel0 = self.obstacle_pos.clone(), self.obstacle_vel.clone()
+        try:
+            self.obstacle_vel = -self.obstacle_vel
+            for _ in range(steps_back):
+                self._move_obstacles()
+            return self.render()
+        finally:
+            self.obstacle_pos, self.obstacle_vel = pos0, vel0
+
     # ---------------- Info / Rendering ----------------
 
     def _get_info(self):
@@ -195,6 +212,10 @@ class CollisionTwoRoomEnv(TwoRoomEnv):
         k = 1 if self.obstacle_info == 'first' else None
         info['obstacle_pos'] = self.obstacle_pos[:k].detach().cpu().numpy().copy()
         info['obstacle_vel'] = self.obstacle_vel[:k].detach().cpu().numpy().copy()
+        if k == 1 and self.obstacle_pos.shape[0] == 0:
+            # num_obstacles=0 대조군 평가(E24): 평가 buffer 모양(obstacle 1개)에 맞춘다.
+            info['obstacle_pos'] = np.zeros((1, 2), dtype=np.float32)
+            info['obstacle_vel'] = np.zeros((1, 2), dtype=np.float32)
         info['contact'] = bool(self.contact)
         info['pinned'] = bool(self.pinned)
         return info
