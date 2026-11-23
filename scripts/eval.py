@@ -165,7 +165,15 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
                         oo.plan_oracle([self.obs_states[i][j] for j in idx], self._unwrapped(i), oracle_horizon, frameskip)
                         for i in range(n)
                     ])
-                if est is not None:  # E56: 화면에서 obstacle 상태를 읽는다
+                # E57: 탐지는 이번 호출에서 계획을 세울 env가 있을 때만 한다(계획하지 않는 step에서는 obs_est를 쓰지 않는다).
+                # planning 6개를 동시에 돌리면 매 step의 작은 GPU 호출이 밀려 실행이 3배 느려졌다. 계획에 들어가는 값은 같다.
+                if est is not None:
+                    _fl = info_dict.get('_needs_flush')
+                    _fl = np.zeros(n, bool) if _fl is None else np.asarray(_fl, bool).reshape(n, -1)[:, -1]
+                    _tm = info_dict.get('terminated')
+                    _dd = np.zeros(n, bool) if _tm is None else np.asarray(_tm, bool).reshape(n, -1)[:, -1]
+                    est_needed = any((len(self._action_buffer[i]) == 0 or _fl[i]) and not _dd[i] for i in range(n))
+                if est is not None and est_needed:  # E56: 화면에서 obstacle 상태를 읽는다
                     from iawm import obs_detector as od
                     det, fc, dev = est
                     cur = np.stack([self.frames[i][j] for i in range(n) for j in idx])
