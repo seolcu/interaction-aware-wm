@@ -2709,3 +2709,26 @@ planning 성공률 (%, 50 episode씩)
 **운영:** smoke test에서 계획 시점 탐지 오차가 크게 나왔다(속도 2.7). 원인은 이미 끝난 env(화면이 멈춤)까지 잰 것이었다. 진행 중인 env만 재도록 고쳐 실행 중인 세션에 올렸다(`eval.py`, md5 확인). env에서 직접 화면을 만들어 재는 진단(`scripts/colab/diag_detector_env.py`)에서 smoke 탐지기의 놓침은 1.8%였고, 대부분 obstacle 두 개가 30px 안으로 겹칠 때였다.
 
 **결과물:** 로컬 `outputs/e56/res/`(git 제외), Proton Drive `results/E56_obs_detector/`.
+
+## 2026-11-24 · E57. E56 모델의 obstacle 개수 일반화: 안 본 3개(새 seed)와 4개 (학습 없음)
+
+**목적:** E56에서 obstacle 2개로만 학습한 탐지기 + obstacle별 h_int(`e56_est`)가 학습 때 안 본 obstacle 3개에서 CF-JEPA를 +9.0 ± 1.1%p(16 seed, 16승 0패) 이겼다. 이 결과를 겹치지 않는 seed로 다시 재고, obstacle 4개로 넓혀 "2개로 배워 3·4개에 통한다"를 확인한다. 발표 피드백("obstacle이 많아질 때")에 대한 답이다.
+
+**설정:** 학습 없음. E56의 탐지기 `obs_det_e56.pt`, `e56_est`, `e56_po`(int_only weights)를 base `e47_cf`와 `scripts/merge_int_weights.py`로 합친다. 위치 probe는 `pos_probe_e47_cf.pt`다. planning은 E56과 같다(P2 + `+action_clip=true` + agent 위치 cost). 비교는 `e47_cf`, `e56_est`, `e56_po`다.
+- obstacle 3개: seed 58~73(16개, E56의 42~57과 겹치지 않음).
+- obstacle 4개: seed 42~73(32개).
+- 재현 확인(참고): obstacle 2개 seed 42를 다시 재서 E56 값(cf 80, est 86, po 94)과 비교한다.
+- E56 수치와 합치지 않는다(세션이 다르다). 합친 값은 참고로만 적는다.
+
+**판정 (실행 전에 정함)**
+- **Q3b:** obstacle 3개(seed 58~73)에서 `e56_est` − `e47_cf`가 +3%p 이상이고 표준오차의 2배 이상.
+- **Q4:** obstacle 4개(seed 42~73)에서 같은 기준.
+- 참고: `e56_po` − `e47_cf`, `e56_po` − `e56_est`, 계획 시점 탐지 오차(`[obs est] plan-time`).
+- 해석 계획: Q3b와 Q4가 통과하면 obstacle별 구조와 개수 무관 탐지기로 안 본 개수에 일반화한다는 결과가 두 점으로 확인된다. Q4만 미달이면 4개에서의 한계(탐지 놓침 증가, 동시 접촉)를 plan-time 오차와 plan log로 나눠 본다.
+
+**운영:** `outputs/e57/`(git 제외). 수집은 시작 상태용 `collision_tworoom`과 smoke용 `r2dbg`뿐이다. smoke test는 obstacle 4개에서 탐지기 입력 모양 `(3, 7, 28)`과 정답 입력 `(3, 7, 24)`를 확인한다.
+- 실행: `systemd-run --user --unit=e57-run --collect --setenv=HOURS=9 bash "$PWD/outputs/e57/launch.sh"`
+
+**비용 상한:** L4 세션 1개, 기한 9시간, 18 CU. 예상은 setup과 수집 약 30분, planning 3조건 × 48 seed 약 5시간 30분이다. 합계 약 6시간, 12 CU다.
+
+**실행 상태:** 사전 등록.
