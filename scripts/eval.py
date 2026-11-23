@@ -173,8 +173,12 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
                     P, V, M = det.detect(torch.from_numpy(prv).to(dev), torch.from_numpy(cur).to(dev))
                     P, V, M = (t.cpu().numpy().reshape(n, len(idx), *t.shape[1:]) for t in (P, V, M))
                     feats = []
+                    term = info_dict.get('terminated')
+                    dead = np.zeros(n, bool) if term is None else np.asarray(term, bool).reshape(n, -1)[:, -1]
                     for i in range(n):
                         feats.append(od.plan_features([(P[i, h], V[i, h], M[i, h]) for h in range(len(idx))], fc, est_horizon, dev))
+                        if dead[i] or np.array_equal(self.frames[i][-1], self.frames[i][-2]):  # 끝난 env는 화면이 멈춰 있다(진단에서 뺀다)
+                            continue
                         tp, tv = self.obs_states[i][-1]
                         pe, ve, miss, fp = od.match_error(P[i, -1], V[i, -1], M[i, -1], tp.reshape(-1, 2), tv.reshape(-1, 2))
                         self.est_err['pos'] += pe; self.est_err['vel'] += ve
