@@ -2793,3 +2793,41 @@ obstacle 수별 정리 (E56, E57, 모든 모델은 obstacle 2개로만 학습, �
 
 **결과물:** 로컬 `outputs/e57/res/`(git 제외), Proton Drive `results/E57_count_generalization/`.
 
+
+## 2026-11-24 · E58. 서로 떨어져 나타나는 obstacle에서 E56을 다시 하기 (spawn 최소 거리 60px)
+
+**목적:** E57에서 `crossing` spawn이 obstacle들을 거의 같은 자리에 둔다는 것을 찾았다(obstacle 3개의 시작 최근접 거리 평균 7px, 반지름 22px). 그래서 E47~E57의 "obstacle 2·3·4개"는 상당 부분 서로 겹친 obstacle이다. spawn에서 obstacle 중심 사이 최소 거리를 60px로 강제해, 서로 떨어진 obstacle 여러 개에서도 E56의 결과가 성립하는지 확인한다.
+- E56의 결과: 탐지기 + obstacle별 h_int가 CF-JEPA를 2개에서 +6.1, 안 본 3개에서 +9.0%p 이겼다.
+- 발표 피드백("object 간 다중 관계")에 정확히 답하는 조건이다.
+
+**구현:**
+- `envs/collision_tworoom.py`에 `obstacle_min_sep`을 추가했다(기본 0 = 예전 spawn과 난수 순서까지 같다). 0보다 크면 앞서 놓은 obstacle과의 거리가 이 값 이상이 될 때까지 최대 100번 다시 뽑는다. 다시 뽑은 횟수는 `spawn_retries`에 남긴다.
+- 수집은 `collect_collision.py --min-sep`, 평가는 `+world.obstacle_min_sep=60.0`이다.
+- smoke test에서 env 진단으로 시작 거리와 10 step 뒤 거리를 잰다.
+
+**설정:** E56과 같고 spawn만 다르다.
+- base `e47_cf`와 위치 probe(E47)를 그대로 쓴다. base는 겹친 obstacle data로 학습했으므로 CF-JEPA와 제안 모델 모두 새 spawn이 처음이다.
+- data(모두 obstacle 2개, 반지름 22, 최소 거리 60):
+  - `r2sf`: 탐지기·예측기, 1만 episode, seed 6262
+  - `r2sy`: h_int, 1만, seed 4242
+  - `r2syt`: test, 1,500, seed 777
+  - `r2sdbg`: smoke, 200, seed 11
+  - `collision_tworoom`: 시작 상태
+- 모델: `e58_est`(탐지기 입력, 제안), `e58_po`(정답 입력, obstacle별, 상한), `e47_cf`(CF-JEPA).
+- planning: obstacle 2개 seed 42~73(32개), 학습 때 안 본 3개 seed 42~57(16개). 모두 최소 거리 60이다.
+
+**판정 (실행 전에 정함)**
+- 판정 1(탐지기): held-out 속도 오차 < 2 px/step.
+- **Q1:** 2개에서 `e58_est` − `e47_cf`가 +3%p 이상이고 표준오차의 2배 이상.
+- **Q3:** 3개(안 봄)에서 같은 기준.
+- 참고: `e58_po` − `e47_cf`(상한), `e58_po` − `e58_est`, spawn 진단(시작 거리 44px 미만 비율), 계획 시점 탐지 오차.
+- 해석 계획:
+  - Q1·Q3 통과: 서로 떨어진 obstacle 여러 개에서도 제안 방법이 CF-JEPA를 이긴다. E56·E57의 결론이 spawn 결함 때문이 아니다.
+  - 미달: E56의 이득은 겹친 obstacle 조건에 의존했다. 상한(`e58_po`)과 비교해 interaction 정보 자체의 이득이 줄었는지, 탐지가 문제인지 나눈다.
+
+**운영:** E56 pipeline을 고쳐 `outputs/e58/`에 둔다(git 제외). E57에서 고친 eval 속도(계획 step만 탐지, CPU thread 2)와 감시 스크립트(3번 연속 응답이 없을 때만 종료)를 쓴다. L4 할당 실패에 대비해 `retry.sh`로 띄운다.
+- 실행: `systemd-run --user --unit=e58-run --collect --setenv=HOURS=13 bash "$PWD/outputs/e58/retry.sh"`
+
+**비용 상한:** L4 세션 1개, 기한 13시간, 26 CU. 예상은 수집 약 2시간 50분, 탐지기 약 15분, cache와 학습 약 1시간 30분, planning 약 5시간이다. 합계 약 10시간, 20 CU다.
+
+**실행 상태:** 사전 등록.

@@ -92,6 +92,7 @@ def main():
     ap.add_argument('--num-obstacles', type=int, default=1)
     ap.add_argument('--spawn', default='crossing', choices=['crossing', 'random'])
     ap.add_argument('--obstacle-radius', type=float, default=14.0)  # E27: 평가 조건 r3b(22)와 맞춘 data
+    ap.add_argument('--min-sep', type=float, default=0.0, help='E58: obstacle 중심 사이 최소 거리(px). 0이면 예전 spawn')
     ap.add_argument('--name', default='collision_tworoom')
     args = ap.parse_args()
 
@@ -103,6 +104,7 @@ def main():
         num_obstacles=args.num_obstacles,
         spawn_mode=args.spawn,
         obstacle_radius=args.obstacle_radius,
+        obstacle_min_sep=args.min_sep,
     )
     world.set_policy(ExpertPolicy(action_noise=2.0, action_repeat_prob=0.05, seed=args.seed))
 

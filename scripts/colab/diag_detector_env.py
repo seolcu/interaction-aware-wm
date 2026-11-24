@@ -30,11 +30,14 @@ def main():
     ap.add_argument('--episodes', type=int, default=20)
     ap.add_argument('--steps', type=int, default=60)
     ap.add_argument('--thr', type=float, default=0.3)
+    ap.add_argument('--min-sep', type=float, default=0.0, help='E58: env의 obstacle 최소 거리')
     args = ap.parse_args()
     dev = 'cuda' if torch.cuda.is_available() else 'cpu'
     home = Path(os.environ.get('STABLEWM_HOME', Path.home() / '.stable-wm'))
     det, fc, meta = od.load(home / 'checkpoints' / args.detector, dev)
-    env = gym.make('iawm/CollisionTwoRoom-v1', num_obstacles=args.num_obstacles, obstacle_radius=22.0).unwrapped
+    env = gym.make('iawm/CollisionTwoRoom-v1', num_obstacles=args.num_obstacles, obstacle_radius=22.0,
+                   obstacle_min_sep=args.min_sep).unwrapped
+    pair0, pair10, retries = [], [], []
     rec = []  # (missed, d_obstacle, d_agent, d_border)
     vel_err = []
     first_vel = []
@@ -46,6 +49,10 @@ def main():
         past = np.asarray(env.render_past(1))
         P, V, M = det.detect(torch.from_numpy(past[None]).to(dev), torch.from_numpy(cur0[None]).to(dev), thr=args.thr)
         tp0, tv0 = oo.current_state(env)
+        retries.append(getattr(env, 'spawn_retries', 0))
+        q = tp0.reshape(-1, 2)
+        if len(q) > 1:
+            pair0.append(min(np.linalg.norm(q[i] - q[j]) for i in range(len(q)) for j in range(i + 1, len(q))))
         pe, ve, _, _ = od.match_error(P[0].cpu().numpy(), V[0].cpu().numpy(), M[0].cpu().numpy(), tp0.reshape(-1, 2), tv0.reshape(-1, 2))
         first_vel += ve
         prev = cur0
@@ -66,8 +73,14 @@ def main():
                 rec.append((k not in pairs, d_ob, d_ag, d_bd))
                 if k in pairs:
                     vel_err.append(float(np.linalg.norm(tv[k] - V[det_idx[pairs[k]]])))
+            if t == 9 and len(tp) > 1:
+                pair10.append(min(np.linalg.norm(tp[i] - tp[j]) for i in range(len(tp)) for j in range(i + 1, len(tp))))
             prev = cur
     r = np.array(rec)
+    if pair0:
+        p0, p10 = np.array(pair0), np.array(pair10)
+        print(f'DIAG spawn: min pair dist t0 mean {p0.mean():.1f} frac<44 {(p0 < 44).mean():.3f} | t10 mean {p10.mean():.1f} '
+              f'frac<44 {(p10 < 44).mean():.3f} | spawn retries mean {np.mean(retries):.2f}')
     miss = r[:, 0] > 0
     print(f'DIAG n {len(r)} miss {miss.mean():.4f} vel_mae {np.mean(vel_err):.3f} | first step (render_past prev) vel_mae {np.mean(first_vel):.3f} n {len(first_vel)}')
     for name, col, edges in (('obstacle_dist', 1, [0, 30, 44, 60, 999]), ('agent_dist', 2, [0, 20, 30, 45, 999]),
