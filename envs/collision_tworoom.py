@@ -136,7 +136,9 @@ class CollisionTwoRoomEnv(TwoRoomEnv):
         tries = 100 if self.obstacle_min_sep > 0 else 1
         for _ in range(n):
             for _attempt in range(tries):
-                p, v = self._sample_obstacle(a, lo, hi)
+                # E58: crossing으로 30번 안에 떨어진 자리를 못 찾으면(목표가 다른 방이면 위치가 벽 쪽 한 줄로 clamp된다)
+                # 방 안에서 위치를 고르고, 속도는 crossing처럼 agent 경로 위 한 점을 향하게 한다.
+                p, v = self._sample_obstacle(a, lo, hi, fallback=self.spawn_mode == 'crossing' and _attempt >= 30)
                 if self.obstacle_min_sep <= 0 or all(float(torch.norm(p - q)) >= self.obstacle_min_sep for q in pos):
                     break
                 self.spawn_retries += 1
@@ -145,8 +147,18 @@ class CollisionTwoRoomEnv(TwoRoomEnv):
         self.obstacle_pos = torch.stack(pos)
         self.obstacle_vel = torch.stack(vel)
 
-    def _sample_obstacle(self, a, lo, hi):
+    def _sample_obstacle(self, a, lo, hi, fallback: bool = False):
         """obstacle 하나의 (위치, 속도). 난수 소비 순서는 E58 이전 spawn과 같다(min_sep = 0이면 같은 궤적)."""
+        if fallback:
+            d = self.target_position - a
+            d_norm = float(torch.norm(d)) + 1e-6
+            u = d / d_norm
+            t = float(self.np_random.uniform(25.0, 60.0))
+            anchor = a + u * min(t, d_norm)
+            p = lo + torch.as_tensor(self.np_random.random(2), dtype=torch.float32) * (hi - lo)
+            v = anchor - p
+            v = v / (float(torch.norm(v)) + 1e-6) * self._sample_speed()
+            return p, v
         if self.spawn_mode == 'crossing':
             # agent -> target 경로 위 한 점을 고르고, 경로에 수직으로 떨어진 곳에서
             # 그 점을 향해 움직이게 한다. 같은 방 안으로 clamp한다.

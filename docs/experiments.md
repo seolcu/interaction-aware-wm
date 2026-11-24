@@ -2794,40 +2794,55 @@ obstacle 수별 정리 (E56, E57, 모든 모델은 obstacle 2개로만 학습, �
 **결과물:** 로컬 `outputs/e57/res/`(git 제외), Proton Drive `results/E57_count_generalization/`.
 
 
-## 2026-11-24 · E58. 서로 떨어져 나타나는 obstacle에서 E56을 다시 하기 (spawn 최소 거리 60px)
+## 2026-11-24 · E58. 덜 겹치는 작은 obstacle에서 E56을 다시 하기 (반지름 14, spawn 최소 거리 40px)
 
-**목적:** E57에서 `crossing` spawn이 obstacle들을 거의 같은 자리에 둔다는 것을 찾았다(obstacle 3개의 시작 최근접 거리 평균 7px, 반지름 22px). 그래서 E47~E57의 "obstacle 2·3·4개"는 상당 부분 서로 겹친 obstacle이다. spawn에서 obstacle 중심 사이 최소 거리를 60px로 강제해, 서로 떨어진 obstacle 여러 개에서도 E56의 결과가 성립하는지 확인한다.
-- E56의 결과: 탐지기 + obstacle별 h_int가 CF-JEPA를 2개에서 +6.1, 안 본 3개에서 +9.0%p 이겼다.
-- 발표 피드백("object 간 다중 관계")에 정확히 답하는 조건이다.
+**목적:** E57에서 `crossing` spawn이 obstacle들을 거의 같은 자리에 둔다는 것을 찾았다. 그래서 E47~E57의 "obstacle 2·3·4개"는 상당 부분 서로 겹친 obstacle이다. 덜 겹치는 조건에서도 E56의 결과(탐지기 + obstacle별 h_int가 CF-JEPA를 이긴다, 안 본 개수로 일반화한다)가 성립하는지 확인한다.
 
-**구현:**
-- `envs/collision_tworoom.py`에 `obstacle_min_sep`을 추가했다(기본 0 = 예전 spawn과 난수 순서까지 같다). 0보다 크면 앞서 놓은 obstacle과의 거리가 이 값 이상이 될 때까지 최대 100번 다시 뽑는다. 다시 뽑은 횟수는 `spawn_retries`에 남긴다.
-- 수집은 `collect_collision.py --min-sep`, 평가는 `+world.obstacle_min_sep=60.0`이다.
-- smoke test에서 env 진단으로 시작 거리와 10 step 뒤 거리를 잰다.
+**첫 시도와 진단 (11/24 11:31~12:20, 반지름 22, 최소 거리 60px):**
+- spawn에 최소 거리 옵션(`obstacle_min_sep`)을 넣고 E56 pipeline으로 띄웠다. smoke test의 env 진단에서 obstacle 3개가 하나도 떨어지지 않았다(시작 최근접 평균 8px, 다시 뽑은 횟수 평균 141).
+  - 원인: agent 방은 가로 폭이 49px다(obstacle 중심 x는 139~188). 목표가 다른 방이면 crossing 위치가 벽 쪽 한 줄(x = 139)로 clamp된다.
+  - smoke 판정이 진단 줄이 있는지만 봐서 통과했다. 큰 수집을 시작하기 전에 PID로 멈추고 세션을 껐다(약 1.5 CU).
+- 30번 안에 못 찾으면 방 안에서 위치를 뽑는 fallback을 넣었다. 그러면 시작 때는 떨어진다(obstacle 2개 0%, 3개 15%가 44px 미만). 그러나 crossing에서는 모든 obstacle이 agent 경로의 비슷한 점을 향하므로 10 step 뒤에는 다시 75%, 97%가 겹쳤다.
+- env 진단, 30 step, 목표를 향해 걷는 agent:
 
-**설정:** E56과 같고 spawn만 다르다.
-- base `e47_cf`와 위치 probe(E47)를 그대로 쓴다. base는 겹친 obstacle data로 학습했으므로 CF-JEPA와 제안 모델 모두 새 spawn이 처음이다.
-- data(모두 obstacle 2개, 반지름 22, 최소 거리 60):
-  - `r2sf`: 탐지기·예측기, 1만 episode, seed 6262
-  - `r2sy`: h_int, 1만, seed 4242
-  - `r2syt`: test, 1,500, seed 777
-  - `r2sdbg`: smoke, 200, seed 11
+| spawn | 반지름 | obstacle 2개 겹친 step | obstacle 3개 겹친 step | 충돌 있는 episode (2개 / 3개) |
+|---|---|---|---|---|
+| crossing (지금까지) | 22 | 79% | 98% | 98% / 98% |
+| random + 최소 거리 60 | 22 | 34% | 78% | 90% / 98% |
+| random + 최소 거리 40 | 14 | 16% | 38% | 60% / 80% |
+| crossing + 최소 거리 40 | **14** | **26%** | **53%** | **95% / 100%** |
+
+- 반지름 22로는 좁은 방에서 여러 obstacle이 겹칠 수밖에 없다. 사용자와 논의해 반지름 14 + crossing + 최소 거리 40으로 다시 하기로 했다. 겹침이 2개 26%, 3개 53%로 줄고 충돌은 거의 모든 episode에서 일어난다.
+
+**설정 (실행 전에 정함):**
+- data(obstacle 2개, 반지름 14, crossing, 최소 거리 40):
+  - `r14f`: base fine-tune·위치 probe·탐지기·예측기, 1만 episode, seed 6262. h_int와 분리한다.
+  - `r14y`: h_int, 1만, seed 4242
+  - `r14yt`: test 1,500, seed 777
+  - `r14dbg`: smoke 200, seed 11
   - `collision_tworoom`: 시작 상태
-- 모델: `e58_est`(탐지기 입력, 제안), `e58_po`(정답 입력, obstacle별, 상한), `e47_cf`(CF-JEPA).
-- planning: obstacle 2개 seed 42~73(32개), 학습 때 안 본 3개 seed 42~57(16개). 모두 최소 거리 60이다.
+- base `e58_cf`: `e47_cf`에서 시작해 `r14f`로 2 epoch fine-tune한다. 수집이 모두 끝난 뒤에 한다(E51 CPU 경합). 위치 probe `pos_probe_e58_cf.pt`.
+- 탐지기 `obs_det_e58.pt`는 E56과 같고 `--radius 14`다. 모델은 `e58_est`(제안), `e58_po`(정답 입력, obstacle별, 상한), `e58_cf`(CF-JEPA)다.
+- planning: 반지름 14, 최소 거리 40, P2 + `+action_clip=true` + agent 위치 cost. obstacle 2개 seed 42~73(32개), 학습 때 안 본 3개 seed 42~57(16개).
 
-**판정 (실행 전에 정함)**
+**판정 (실행 전에 정함):**
+- smoke: env 진단에서 obstacle 2개의 시작 최근접 거리가 28px(2r) 미만인 비율이 5% 이하여야 한다.
 - 판정 1(탐지기): held-out 속도 오차 < 2 px/step.
-- **Q1:** 2개에서 `e58_est` − `e47_cf`가 +3%p 이상이고 표준오차의 2배 이상.
-- **Q3:** 3개(안 봄)에서 같은 기준.
-- 참고: `e58_po` − `e47_cf`(상한), `e58_po` − `e58_est`, spawn 진단(시작 거리 44px 미만 비율), 계획 시점 탐지 오차.
-- 해석 계획:
-  - Q1·Q3 통과: 서로 떨어진 obstacle 여러 개에서도 제안 방법이 CF-JEPA를 이긴다. E56·E57의 결론이 spawn 결함 때문이 아니다.
-  - 미달: E56의 이득은 겹친 obstacle 조건에 의존했다. 상한(`e58_po`)과 비교해 interaction 정보 자체의 이득이 줄었는지, 탐지가 문제인지 나눈다.
+- **Q1:** 2개에서 `e58_est` − `e58_cf`가 +3%p 이상이고 표준오차의 2배 이상. **Q3:** 3개(안 봄)에서 같은 기준.
+- 참고: `e58_po` − `e58_cf`, `e58_po` − `e58_est`, 계획 시점 탐지 오차.
+- 해석: Q1·Q3 통과면 E56·E57의 결론이 겹친 obstacle에만 의존하지 않는다. 미달이면 상한(`e58_po`)으로 interaction 정보 자체의 이득과 탐지 문제를 나눈다. 작은 obstacle은 밀어내는 효과가 작아 상한 자체가 작을 수 있다(E31: 반지름이 클수록 interaction 이득이 컸다).
 
-**운영:** E56 pipeline을 고쳐 `outputs/e58/`에 둔다(git 제외). E57에서 고친 eval 속도(계획 step만 탐지, CPU thread 2)와 감시 스크립트(3번 연속 응답이 없을 때만 종료)를 쓴다. L4 할당 실패에 대비해 `retry.sh`로 띄운다.
-- 실행: `systemd-run --user --unit=e58-run --collect --setenv=HOURS=13 bash "$PWD/outputs/e58/retry.sh"`
+**운영:** `outputs/e58/`(git 제외).
+- 실행: `systemd-run --user --unit=e58-run --collect --setenv=HOURS=14 bash "$PWD/outputs/e58/retry.sh"`
 
-**비용 상한:** L4 세션 1개, 기한 13시간, 26 CU. 예상은 수집 약 2시간 50분, 탐지기 약 15분, cache와 학습 약 1시간 30분, planning 약 5시간이다. 합계 약 10시간, 20 CU다.
+**비용 상한:** L4 세션 1개, 기한 14시간, 28 CU. 예상은 다음과 같다. 합계 약 12시간, 24 CU다.
+
+| 단계 | 시간 |
+|---|---|
+| 수집 | 약 2시간 50분 |
+| fine-tune | 약 1시간 30분 |
+| probe·탐지기 | 약 30분 |
+| cache·학습 | 약 1시간 30분 |
+| planning | 약 5시간 |
 
 **실행 상태:** 사전 등록.

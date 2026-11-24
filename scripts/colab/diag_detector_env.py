@@ -31,11 +31,29 @@ def main():
     ap.add_argument('--steps', type=int, default=60)
     ap.add_argument('--thr', type=float, default=0.3)
     ap.add_argument('--min-sep', type=float, default=0.0, help='E58: env의 obstacle 최소 거리')
+    ap.add_argument('--radius', type=float, default=22.0)
+    ap.add_argument('--spawn-only', action='store_true', help='탐지기 없이 spawn 거리만 잰다 (E58 smoke)')
     args = ap.parse_args()
+    if args.spawn_only:
+        env = gym.make('iawm/CollisionTwoRoom-v1', num_obstacles=args.num_obstacles, obstacle_radius=args.radius,
+                       obstacle_min_sep=args.min_sep).unwrapped
+        p0, p10, rt = [], [], []
+        pair = lambda q: min(np.linalg.norm(q[i] - q[j]) for i in range(len(q)) for j in range(i + 1, len(q)))
+        for ep in range(args.episodes):
+            env.reset(seed=ep)
+            rt.append(env.spawn_retries)
+            p0.append(pair(env.obstacle_pos.numpy()))
+            for _ in range(10):
+                env.step(np.zeros(2, np.float32))
+            p10.append(pair(env.obstacle_pos.numpy()))
+        p0, p10, dd = np.array(p0), np.array(p10), 2 * args.radius
+        print(f'DIAG spawn: min pair dist t0 mean {p0.mean():.1f} frac<2r {(p0 < dd).mean():.3f} | t10 mean {p10.mean():.1f} '
+              f'frac<2r {(p10 < dd).mean():.3f} | spawn retries mean {np.mean(rt):.2f}')
+        return
     dev = 'cuda' if torch.cuda.is_available() else 'cpu'
     home = Path(os.environ.get('STABLEWM_HOME', Path.home() / '.stable-wm'))
     det, fc, meta = od.load(home / 'checkpoints' / args.detector, dev)
-    env = gym.make('iawm/CollisionTwoRoom-v1', num_obstacles=args.num_obstacles, obstacle_radius=22.0,
+    env = gym.make('iawm/CollisionTwoRoom-v1', num_obstacles=args.num_obstacles, obstacle_radius=args.radius,
                    obstacle_min_sep=args.min_sep).unwrapped
     pair0, pair10, retries = [], [], []
     rec = []  # (missed, d_obstacle, d_agent, d_border)
@@ -79,8 +97,9 @@ def main():
     r = np.array(rec)
     if pair0:
         p0, p10 = np.array(pair0), np.array(pair10)
-        print(f'DIAG spawn: min pair dist t0 mean {p0.mean():.1f} frac<44 {(p0 < 44).mean():.3f} | t10 mean {p10.mean():.1f} '
-              f'frac<44 {(p10 < 44).mean():.3f} | spawn retries mean {np.mean(retries):.2f}')
+        dd = 2 * args.radius  # 두 obstacle이 겹치는 거리
+        print(f'DIAG spawn: min pair dist t0 mean {p0.mean():.1f} frac<2r {(p0 < dd).mean():.3f} | t10 mean {p10.mean():.1f} '
+              f'frac<2r {(p10 < dd).mean():.3f} | spawn retries mean {np.mean(retries):.2f}')
     miss = r[:, 0] > 0
     print(f'DIAG n {len(r)} miss {miss.mean():.4f} vel_mae {np.mean(vel_err):.3f} | first step (render_past prev) vel_mae {np.mean(first_vel):.3f} n {len(first_vel)}')
     for name, col, edges in (('obstacle_dist', 1, [0, 30, 44, 60, 999]), ('agent_dist', 2, [0, 20, 30, 45, 999]),
