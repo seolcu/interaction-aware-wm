@@ -101,6 +101,7 @@ def main():
     ap.add_argument('--lr', type=float, default=1e-3)
     ap.add_argument('--fc-steps', type=int, default=6000)
     ap.add_argument('--width', type=int, default=64)
+    ap.add_argument('--radius', type=float, default=22.0, help='obstacle 반지름 (좌표 방향 확인에 쓴다, E58은 14)')
     ap.add_argument('--seed', type=int, default=0)
     args = ap.parse_args()
     import h5py
@@ -119,7 +120,7 @@ def main():
         n_tr = min(args.episodes, n_ep - args.val_episodes)
         va_lo = n_ep - args.val_episodes
         # 좌표 방향 확인 (앞 300 frame)
-        cr, rc, n_chk = od.blue_centroid_check(f['pixels'][:300], pos[:300])
+        cr, rc, n_chk = od.blue_centroid_check(f['pixels'][:300], pos[:300], radius=args.radius)
         colrow = cr < rc
         print(f'RESULT_ORIENT colrow_err {cr:.3f} rowcol_err {rc:.3f} n {n_chk} -> xy_is_colrow {int(colrow)}', flush=True)
         assert min(cr, rc) < 2.0 and n_chk > 20, '파란 픽셀 중심이 label과 맞지 않는다 (좌표 정의 확인 필요)'

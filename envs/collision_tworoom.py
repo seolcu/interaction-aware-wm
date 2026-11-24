@@ -30,6 +30,7 @@ class CollisionTwoRoomEnv(TwoRoomEnv):
         obstacle_radius: float = 14.0,
         obstacle_speed: tuple[float, float] = (3.0, 6.0),
         spawn_mode: str = 'crossing',
+        obstacle_min_sep: float = 0.0,
         obstacle_info: str = 'all',
         **kwargs,
     ):
@@ -38,6 +39,10 @@ class CollisionTwoRoomEnv(TwoRoomEnv):
         self.obstacle_radius = float(obstacle_radius)
         self.obstacle_speed = tuple(float(s) for s in obstacle_speed)
         self.spawn_mode = spawn_mode
+        # E58: obstacle 중심 사이 최소 거리(px). 0이면 예전과 같다. crossing spawn은 obstacle들을 거의 같은 자리에
+        # 두었다(E57: obstacle 3개의 시작 최근접 거리 평균 7px, 반지름 22). 0보다 크면 이 거리를 넘을 때까지 다시 뽑는다.
+        self.obstacle_min_sep = float(obstacle_min_sep)
+        self.spawn_retries = 0  # 마지막 reset에서 다시 뽑은 횟수 (진단)
         # 'first': info에 첫 obstacle만 넣는다. 평가 pipeline은 info buffer를 dataset(obstacle 1개)
         # 모양으로 잡아서, obstacle이 여러 개면 shape가 맞지 않는다(E14).
         assert obstacle_info in ('all', 'first')
@@ -127,30 +132,53 @@ class CollisionTwoRoomEnv(TwoRoomEnv):
         a = self.agent_position
         lo, hi = self._room_bounds(a, r)
         pos, vel = [], []
+        self.spawn_retries = 0
+        tries = 100 if self.obstacle_min_sep > 0 else 1
         for _ in range(n):
-            if self.spawn_mode == 'crossing':
-                # agent -> target 경로 위 한 점을 고르고, 경로에 수직으로 떨어진 곳에서
-                # 그 점을 향해 움직이게 한다. 같은 방 안으로 clamp한다.
-                d = self.target_position - a
-                d_norm = float(torch.norm(d)) + 1e-6
-                u = d / d_norm
-                perp = torch.tensor([-u[1], u[0]])
-                t = float(self.np_random.uniform(25.0, 60.0))
-                anchor = a + u * min(t, d_norm)
-                side = 1.0 if self.np_random.random() < 0.5 else -1.0
-                offset = float(self.np_random.uniform(35.0, 60.0))
-                p = anchor + side * perp * offset
-                p = torch.maximum(torch.minimum(p, hi), lo)
-                v = anchor - p
-                v = v / (float(torch.norm(v)) + 1e-6) * self._sample_speed()
-            else:
-                p = lo + torch.as_tensor(self.np_random.random(2), dtype=torch.float32) * (hi - lo)
-                ang = float(self.np_random.uniform(0, 2 * np.pi))
-                v = torch.tensor([np.cos(ang), np.sin(ang)], dtype=torch.float32) * self._sample_speed()
+            for _attempt in range(tries):
+                # E58: crossing으로 30번 안에 떨어진 자리를 못 찾으면(목표가 다른 방이면 위치가 벽 쪽 한 줄로 clamp된다)
+                # 방 안에서 위치를 고르고, 속도는 crossing처럼 agent 경로 위 한 점을 향하게 한다.
+                p, v = self._sample_obstacle(a, lo, hi, fallback=self.spawn_mode == 'crossing' and _attempt >= 30)
+                if self.obstacle_min_sep <= 0 or all(float(torch.norm(p - q)) >= self.obstacle_min_sep for q in pos):
+                    break
+                self.spawn_retries += 1
             pos.append(p.to(torch.float32))
             vel.append(v.to(torch.float32))
         self.obstacle_pos = torch.stack(pos)
         self.obstacle_vel = torch.stack(vel)
+
+    def _sample_obstacle(self, a, lo, hi, fallback: bool = False):
+        """obstacle 하나의 (위치, 속도). 난수 소비 순서는 E58 이전 spawn과 같다(min_sep = 0이면 같은 궤적)."""
+        if fallback:
+            d = self.target_position - a
+            d_norm = float(torch.norm(d)) + 1e-6
+            u = d / d_norm
+            t = float(self.np_random.uniform(25.0, 60.0))
+            anchor = a + u * min(t, d_norm)
+            p = lo + torch.as_tensor(self.np_random.random(2), dtype=torch.float32) * (hi - lo)
+            v = anchor - p
+            v = v / (float(torch.norm(v)) + 1e-6) * self._sample_speed()
+            return p, v
+        if self.spawn_mode == 'crossing':
+            # agent -> target 경로 위 한 점을 고르고, 경로에 수직으로 떨어진 곳에서
+            # 그 점을 향해 움직이게 한다. 같은 방 안으로 clamp한다.
+            d = self.target_position - a
+            d_norm = float(torch.norm(d)) + 1e-6
+            u = d / d_norm
+            perp = torch.tensor([-u[1], u[0]])
+            t = float(self.np_random.uniform(25.0, 60.0))
+            anchor = a + u * min(t, d_norm)
+            side = 1.0 if self.np_random.random() < 0.5 else -1.0
+            offset = float(self.np_random.uniform(35.0, 60.0))
+            p = anchor + side * perp * offset
+            p = torch.maximum(torch.minimum(p, hi), lo)
+            v = anchor - p
+            v = v / (float(torch.norm(v)) + 1e-6) * self._sample_speed()
+        else:
+            p = lo + torch.as_tensor(self.np_random.random(2), dtype=torch.float32) * (hi - lo)
+            ang = float(self.np_random.uniform(0, 2 * np.pi))
+            v = torch.tensor([np.cos(ang), np.sin(ang)], dtype=torch.float32) * self._sample_speed()
+        return p, v
 
     def _move_obstacles(self):
         r = self.obstacle_radius
