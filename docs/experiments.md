@@ -2884,3 +2884,57 @@ planning 성공률 (%, 50 episode씩)
   - 첫 계획의 과거 화면은 CF-JEPA를 포함한 모든 모델에 같으므로 비교는 공정하다. 탐지기 입력 모델의 첫 계획만 손해를 본다.
 
 **결과물:** 로컬 `outputs/e58/res/`(git 제외), Proton Drive `results/E58_small_obstacles/`.
+
+## 2026-11-24 · E59·E60. 평가 설정 고르기(개발 seed)와 최종 평가(새 seed) (E56 모델, obstacle 2개, 학습 없음)
+
+**목적:** 발표 전에 CF-JEPA와의 차이를 최대한 공정하게 키운다.
+- 모든 모델에 같은 설정과 같은 seed를 쓴다. 설정은 개발용 seed(100~107)에서만 고르고, 고른 설정으로 새 seed(200~231)에서 한 번 최종 평가한다.
+- 배경: 지금 평가에서는 계획 하나를 25 step 동안 그대로 실행한다(receding horizon 5, episode 30 step). 그래서 첫 계획이 결과를 거의 정한다. 그런데 첫 계획에서 탐지기의 속도 오차가 크다(E57·E58: 2.2~2.5 px/step). `render_past`가 경계에 붙은 obstacle에 반사된 가짜 과거를 만들기 때문이다.
+
+**설정 후보 (E59, seed 100~107, CF-JEPA와 탐지기 입력 모델):**
+- A: 지금 그대로.
+- B: 첫 계획에서 탐지기에 넣는 시작 전 frame만 반사 없는 직선 과거로 그린다(`+est_straight_past=true`, `render_past(straight=True)`). 모델들이 보는 history 화면은 그대로다. 정답 입력 모델은 첫 계획에서도 실제 현재 상태를 받으므로, 탐지기만 같은 조건으로 맞추는 것이다. CF-JEPA는 A와 같다.
+- C: B + CEM 후보 600, topk 60(모든 모델).
+- D: B + 2 block마다 다시 계획(`plan_config.receding_horizon=2`, 모든 모델).
+
+**선택 규칙 (실행 전에 정함):**
+- 개발 seed에서 (탐지기 입력 − CF-JEPA) paired 평균이 가장 큰 설정을 고른다(`decide.py choose`).
+- C·D는 B보다 1.0%p 넘게 클 때만 고른다(계산 비용이 커서). A는 B보다 1.0%p 넘게 클 때만 고른다.
+
+**E60 (최종):**
+- 고른 설정으로 seed 200~231(32개)에서 `e47_cf`, `e56_est`, `e56_po`를 잰다.
+- **Q1:** `e56_est` − `e47_cf`가 +3%p 이상이고 표준오차의 2배 이상.
+- E56(+6.1, seed 42~73)과는 세션과 설정이 달라 합치지 않는다.
+- 발표에는 E56, E60, E58을 모두 싣는다.
+
+**운영:**
+- `outputs/e59/`. E59가 끝나면 같은 세션에서 E60으로 이어진다.
+- 고른 설정은 E61의 planning에도 쓴다(E61 규칙).
+- 실행: `systemd-run --user --unit=e59-run --collect --setenv=HOURS=16 bash "$PWD/outputs/e59/retry.sh"`
+
+**비용 상한:** L4 세션 1개, 기한 16시간, 32 CU. 예상은 E59 약 4시간, E60 약 4~6시간이다.
+
+**실행 상태:** 사전 등록.
+
+## 2026-11-24 · E61. obstacle 3개로 학습한 탐지기 입력 모델 (base e51_cf 고정)
+
+**목적:** 정답 입력의 이득은 obstacle 3개로 학습했을 때 가장 컸다(E54: +9.6~10.4%p, 32 seed). 같은 조건에서 탐지기 입력 모델(E56 방식)을 학습해, 정답 없이 얻는 CF-JEPA 대비 이득을 최대로 잰다.
+
+**설정:** E56과 같은 방식이고 obstacle 3개, 반지름 22, 예전 crossing spawn(E51·E53·E54와 같은 조건)이다.
+- base `e51_cf`와 위치 probe `pos_probe_e51_cf.pt`(E51).
+- data: `r3f`(탐지기·예측기, 1만, seed 6363), `r3y`(h_int, 1만, seed 4343), `r3yt`(test, seed 778), `r3dbg`(smoke, seed 21), `collision_tworoom`.
+- 모델: `e61_est`(탐지기 입력, obstacle별 h_int, slot 4, 첫 계획에 직선 과거), `e61_po`(정답 입력, obstacle별), `e51_cf`(CF-JEPA).
+- planning: obstacle 3개, P2 + `+action_clip=true` + agent 위치 cost, seed 42~73(32개). E59에서 고른 설정(C나 D의 모든 모델 공통 인자)을 E61 CF-JEPA planning을 시작하기 전에 알면 세 모델 모두에 쓴다(`/content/e61_extra.txt`). 모르면 지금 설정으로 한다. 어느 쪽이었는지 status에 남긴다.
+
+**판정 (실행 전에 정함):**
+- 판정 1(탐지기): held-out 속도 오차 < 2 px/step.
+- **Q1:** `e61_est` − `e51_cf`가 +3%p 이상이고 표준오차의 2배 이상.
+- 참고: `e61_po` − `e51_cf`(E54 재현), `e61_po` − `e61_est`.
+
+**운영:**
+- `outputs/e61/`. 큰 수집은 하나씩 한다.
+- 실행: `systemd-run --user --unit=e61-run --collect --setenv=HOURS=14 bash "$PWD/outputs/e61/retry.sh"`
+
+**비용 상한:** L4 세션 1개, 기한 14시간, 28 CU. 예상은 약 9~10시간, 20 CU다.
+
+**실행 상태:** 사전 등록.
