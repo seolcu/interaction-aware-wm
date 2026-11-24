@@ -59,6 +59,7 @@ def main():
     rec = []  # (missed, d_obstacle, d_agent, d_border)
     vel_err = []
     first_vel = []
+    first_vel_straight = []
     rng = np.random.default_rng(0)
     for ep in range(args.episodes):
         env.reset(seed=ep)
@@ -73,6 +74,10 @@ def main():
             pair0.append(min(np.linalg.norm(q[i] - q[j]) for i in range(len(q)) for j in range(i + 1, len(q))))
         pe, ve, _, _ = od.match_error(P[0].cpu().numpy(), V[0].cpu().numpy(), M[0].cpu().numpy(), tp0.reshape(-1, 2), tv0.reshape(-1, 2))
         first_vel += ve
+        past_s = np.asarray(env.render_past(1, straight=True))  # E59: 반사 없는 직선 과거
+        P, V, M = det.detect(torch.from_numpy(past_s[None]).to(dev), torch.from_numpy(cur0[None]).to(dev), thr=args.thr)
+        _, ve_s, _, _ = od.match_error(P[0].cpu().numpy(), V[0].cpu().numpy(), M[0].cpu().numpy(), tp0.reshape(-1, 2), tv0.reshape(-1, 2))
+        first_vel_straight += ve_s
         prev = cur0
         for t in range(args.steps):
             env.step(rng.uniform(-1, 1, 2).astype(np.float32))
@@ -101,7 +106,7 @@ def main():
         print(f'DIAG spawn: min pair dist t0 mean {p0.mean():.1f} frac<2r {(p0 < dd).mean():.3f} | t10 mean {p10.mean():.1f} '
               f'frac<2r {(p10 < dd).mean():.3f} | spawn retries mean {np.mean(retries):.2f}')
     miss = r[:, 0] > 0
-    print(f'DIAG n {len(r)} miss {miss.mean():.4f} vel_mae {np.mean(vel_err):.3f} | first step (render_past prev) vel_mae {np.mean(first_vel):.3f} n {len(first_vel)}')
+    print(f'DIAG n {len(r)} miss {miss.mean():.4f} vel_mae {np.mean(vel_err):.3f} | first step (render_past prev) vel_mae {np.mean(first_vel):.3f} straight {np.mean(first_vel_straight):.3f} n {len(first_vel)}')
     for name, col, edges in (('obstacle_dist', 1, [0, 30, 44, 60, 999]), ('agent_dist', 2, [0, 20, 30, 45, 999]),
                              ('border_dist', 3, [0, 30, 40, 60, 999])):
         parts = []
