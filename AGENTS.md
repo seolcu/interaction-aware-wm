@@ -125,7 +125,7 @@ This file provides guidance to AI agents when working with code in this reposito
 - CF-JEPA가 distractor를 stable-worldmodel에 어떻게 넣었는지(코드 미공개)
 - Iso-Dream++의 학술지 게재본(TPAMI 등) 여부
 
-## 지금까지의 핵심 결과 (11/24, E56까지)
+## 지금까지의 핵심 결과 (11/24, E57까지)
 
 자세한 수치와 설정은 `docs/experiments.md`에 있다. 같은 실험을 반복하기 전에 해당 E 번호를 먼저 읽는다.
 
@@ -154,6 +154,12 @@ This file provides guidance to AI agents when working with code in this reposito
   - 탐지기: 속도 오차 0.31 px/step, contact 이득 61%(정답 입력 65%).
   - planning: CF-JEPA 대비 obstacle 2개 **+6.1 ± 1.1%p**(32 seed, 25승 5패), 학습 때 안 본 3개 **+9.0 ± 1.1%p**(16 seed, 16승 0패).
   - 공정 비교로 CF-JEPA를 이긴 첫 제안 모델이다. 단서: 학습 때 obstacle label을 쓰고, 위치 cost probe는 두 모델이 같은 것을 쓴다.
+- **개수 일반화 (E57):** E56 모델(obstacle 2개로만 학습)을 학습 없이 평가했다. 안 본 3개(새 seed 16개)에서 탐지기 입력 +6.8 ± 1.8%p, 4개(32 seed)에서 +3.7 ± 1.5%p로 CF-JEPA를 이겼다. 4개에서는 정답 입력도 +3.7%p로 이득이 줄었다.
+- **obstacle 겹침 (E57 진단):** `crossing` spawn은 obstacle들을 거의 같은 자리에 둔다.
+  - obstacle 3개는 시작 때 가장 가까운 둘이 평균 7px 떨어져 있다(반지름 22px). 10 step 뒤에도 절반이 10px 이내다.
+  - E27 이후 모든 Collision env data와 평가가 같으므로 비교는 공정하다. 그러나 "obstacle 수" 결과를 서로 떨어진 obstacle 여러 개라고 말하면 안 된다.
+  - 탐지기는 겹친 obstacle을 놓치거나 속도를 섞는다. 특히 episode 첫 계획에서 속도 오차가 2.5 px/step이다.
+- **planning 평가 병렬 (E57):** 한 세션에서 eval을 6개 동시에 돌리면 torch CPU thread가 넘쳐 느려진다(load 32). `eval.py`는 기본 CPU thread를 2개로 두고(`IAWM_EVAL_THREADS`), 탐지기는 계획 step에서만 돌린다.
 - **Colab 운영 (E51):** `collect_collision.py`는 압축 전 raw 파일(frame당 150KB, 1만 episode 약 110GB)을 쓴 뒤 압축한다. 1만 episode 두 개를 동시에 수집하면 L4 세션 디스크(236GB)가 찬다. 큰 수집은 하나씩 한다. 수집(OMP thread 6개 × 2)과 GPU 학습(data loader worker 5개)이 겹치면 수집이 40배 느려진다.
 - **분석 주의 (E40):** plan log에서 성공한 env는 위치가 멈춘 채 기록이 이어진다. 예측과 비교할 때 goal에 닿은 step 이후를 빼야 한다(`analyze_plan_log.py`에 반영).
 - **현재 목표 (11/16, 11/24 E56에서 달성):** 최종 발표(11/26) 전에, 제안 방법이 Collision TwoRoom(r1x, P2)에서 CF-JEPA보다 planning 성공률이 공정 비교로 높다는 결과를 낸다. 다음 실험은 위 결과를 바탕으로 원인을 진단한 뒤 정한다. E42 이후의 질문은 "위치 label과 정답 obstacle 입력 없이도 이 이득이 남는가"다. 개선안마다 근거, 예상 비용, 대조군, 실패 판정 기준을 함께 제시한다.
@@ -206,7 +212,7 @@ E25~E37에서 CU를 낭비하거나 결론을 잘못 낼 뻔한 경험에서 나
 - **역할 (중간 발표까지):** 강연우는 gate 구현과 모델 학습, 설규원은 Collision env와 data, 조하은은 평가와 발표 준비를 맡는다. CF-JEPA 재구현은 설규원이 했다(E3).
 - **코드 (GitHub):** 팀원 3명 모두 collaborator다. 작업 단위로 branch(`<이름>/<작업>`, 예: `yeonwoo/gate`)를 만들고 PR로 main에 합친다.
 - **결과물 (Proton Drive):** 그림, 영상, checkpoint, data는 공유 폴더의 `results/E<번호>_<이름>/`에 올리고, 폴더의 `README.txt`에 한 줄 설명을 더한다.
-- **실험 기록:** `docs/experiments.md`에 E 번호를 이어서 붙인다(현재 E56까지). 목적, 설정, 실행 명령, 결과, 남은 문제를 적는다. 실험 번호를 먼저 정하고 쓰면 번호가 겹치지 않는다.
+- **실험 기록:** `docs/experiments.md`에 E 번호를 이어서 붙인다(현재 E57까지). 목적, 설정, 실행 명령, 결과, 남은 문제를 적는다. 실험 번호를 먼저 정하고 쓰면 번호가 겹치지 않는다.
 - **Colab:** 각자 자기 계정을 쓴다. 환경 준비는 `scripts/colab/setup_lewm.sh` 하나로 된다(약 10분, data 포함). 운영 규칙은 위 "실험 운영 규칙"을 따른다.
 - **팀원에게 일을 줄 때:** 구체적인 구현 방법보다 요구사항(무엇이 되어야 하는지, 어떻게 확인하는지)을 준다. 간단한 일은 설규원이 직접 한다.
 

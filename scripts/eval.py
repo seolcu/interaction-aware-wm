@@ -165,7 +165,15 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
                         oo.plan_oracle([self.obs_states[i][j] for j in idx], self._unwrapped(i), oracle_horizon, frameskip)
                         for i in range(n)
                     ])
-                if est is not None:  # E56: 화면에서 obstacle 상태를 읽는다
+                # E57: 탐지는 이번 호출에서 계획을 세울 env가 있을 때만 한다(계획하지 않는 step에서는 obs_est를 쓰지 않는다).
+                # planning 6개를 동시에 돌리면 매 step의 작은 GPU 호출이 밀려 실행이 3배 느려졌다. 계획에 들어가는 값은 같다.
+                if est is not None:
+                    _fl = info_dict.get('_needs_flush')
+                    _fl = np.zeros(n, bool) if _fl is None else np.asarray(_fl, bool).reshape(n, -1)[:, -1]
+                    _tm = info_dict.get('terminated')
+                    _dd = np.zeros(n, bool) if _tm is None else np.asarray(_tm, bool).reshape(n, -1)[:, -1]
+                    est_needed = any((len(self._action_buffer[i]) == 0 or _fl[i]) and not _dd[i] for i in range(n))
+                if est is not None and est_needed:  # E56: 화면에서 obstacle 상태를 읽는다
                     from iawm import obs_detector as od
                     det, fc, dev = est
                     cur = np.stack([self.frames[i][j] for i in range(n) for j in idx])
@@ -364,6 +372,11 @@ def get_dataset(cfg, dataset_name):
 @hydra.main(version_base=None, config_path="../configs/eval", config_name="tworoom")
 def run(cfg: DictConfig):
     """Run evaluation of dinowm vs random policy."""
+    # E57: planning 6개를 한 세션에서 동시에 돌리면 프로세스마다 torch thread가 수십 개라 CPU 12개에서 서로 밀린다
+    # (load 32). 기본 CPU thread를 2개로 둔다. 혼자 돌릴 때는 IAWM_EVAL_THREADS로 늘린다(0이면 torch 기본값).
+    _nt = int(os.environ.get("IAWM_EVAL_THREADS", "2"))
+    if _nt > 0:
+        torch.set_num_threads(_nt)
     assert (
         cfg.plan_config.horizon * cfg.plan_config.action_block <= cfg.eval.eval_budget
     ), "Planning horizon must be smaller than or equal to eval_budget"

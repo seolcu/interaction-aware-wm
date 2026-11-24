@@ -37,10 +37,18 @@ def main():
     env = gym.make('iawm/CollisionTwoRoom-v1', num_obstacles=args.num_obstacles, obstacle_radius=22.0).unwrapped
     rec = []  # (missed, d_obstacle, d_agent, d_border)
     vel_err = []
+    first_vel = []
     rng = np.random.default_rng(0)
     for ep in range(args.episodes):
         env.reset(seed=ep)
-        prev = np.asarray(env.render())
+        # 첫 계획과 같은 조건: 1 step 전 화면은 render_past(1)로 만든다(eval.py HistoryPolicy)
+        cur0 = np.asarray(env.render())
+        past = np.asarray(env.render_past(1))
+        P, V, M = det.detect(torch.from_numpy(past[None]).to(dev), torch.from_numpy(cur0[None]).to(dev), thr=args.thr)
+        tp0, tv0 = oo.current_state(env)
+        pe, ve, _, _ = od.match_error(P[0].cpu().numpy(), V[0].cpu().numpy(), M[0].cpu().numpy(), tp0.reshape(-1, 2), tv0.reshape(-1, 2))
+        first_vel += ve
+        prev = cur0
         for t in range(args.steps):
             env.step(rng.uniform(-1, 1, 2).astype(np.float32))
             cur = np.asarray(env.render())
@@ -61,7 +69,7 @@ def main():
             prev = cur
     r = np.array(rec)
     miss = r[:, 0] > 0
-    print(f'DIAG n {len(r)} miss {miss.mean():.4f} vel_mae {np.mean(vel_err):.3f}')
+    print(f'DIAG n {len(r)} miss {miss.mean():.4f} vel_mae {np.mean(vel_err):.3f} | first step (render_past prev) vel_mae {np.mean(first_vel):.3f} n {len(first_vel)}')
     for name, col, edges in (('obstacle_dist', 1, [0, 30, 44, 60, 999]), ('agent_dist', 2, [0, 20, 30, 45, 999]),
                              ('border_dist', 3, [0, 30, 40, 60, 999])):
         parts = []
