@@ -65,7 +65,8 @@ def img_transform(cfg):
 
 def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, oracle_horizon: int = 0,
                         plan_log: bool = False, clip_history: bool = False, motion: bool = False,
-                        oracle_noise: float = 0.0, noise_seed: int = 0, est=None, est_horizon: int = 0):
+                        oracle_noise: float = 0.0, noise_seed: int = 0, est=None, est_horizon: int = 0,
+                        est_straight: bool = False):
     """WorldModelPolicy에 두 가지를 더한다 (E26).
 
     obs_fix: World._evaluate_from_dataset은 env를 dataset 시작 상태로 맞춘 뒤 첫 관측 pixels를 dataset
@@ -98,6 +99,7 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
             super().set_env(env)
             n = getattr(env, 'num_envs', 1)
             self.frames = [[] for _ in range(n)]   # env step마다의 frame (HWC uint8), 시작 전 frame 포함
+            self.det_frames = [[] for _ in range(n)]  # E59: 탐지기에 넣는 frame. 시작 전 frame만 다를 수 있다(est_straight)
             self.raw_actions = [[] for _ in range(n)]  # env step마다 실행한 raw action, 시작 전은 0
             self.obs_states = [[] for _ in range(n)]   # frames와 같은 index의 obstacle (pos, vel) (E39)
             self.pos_log = [[] for _ in range(n)]      # env step마다 [agent xy, target xy, contact] (E40)
@@ -124,11 +126,16 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
                     if pre > 0:
                         for k in range(pre + extra, 0, -1):
                             self.frames[i].append(np.asarray(env.render_past(k)))
+                            if est is not None:  # E59: 탐지기에는 반사 없는 직선 과거를 줄 수 있다(모델 history는 그대로)
+                                self.det_frames[i].append(np.asarray(env.render_past(k, straight=True)) if est_straight
+                                                          else self.frames[i][-1])
                             if track_obs:
                                 self.obs_states[i].append(oo.past_state(env, k))
                             self.raw_actions[i].append(np.zeros(self.env.single_action_space.shape, np.float32))
                     self.started[i] = True
                 self.frames[i].append(pix[i, -1].copy())
+                if est is not None:
+                    self.det_frames[i].append(self.frames[i][-1])
                 if track_obs:
                     self.obs_states[i].append(oo.current_state(self._unwrapped(i)))
             if plan_log:
@@ -176,8 +183,8 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
                 if est is not None and est_needed:  # E56: 화면에서 obstacle 상태를 읽는다
                     from iawm import obs_detector as od
                     det, fc, dev = est
-                    cur = np.stack([self.frames[i][j] for i in range(n) for j in idx])
-                    prv = np.stack([self.frames[i][j - 1] for i in range(n) for j in idx])
+                    cur = np.stack([self.det_frames[i][j] for i in range(n) for j in idx])
+                    prv = np.stack([self.det_frames[i][j - 1] for i in range(n) for j in idx])
                     P, V, M = det.detect(torch.from_numpy(prv).to(dev), torch.from_numpy(cur).to(dev))
                     P, V, M = (t.cpu().numpy().reshape(n, len(idx), *t.shape[1:]) for t in (P, V, M))
                     feats = []
@@ -203,7 +210,8 @@ def make_history_policy(base_cls, history: int, frameskip: int, obs_fix: bool, o
                       'frames/env', len(self.frames[0]), 'obs_fix', obs_fix,
                       'obs_oracle', getattr(info_dict.get('obs_oracle'), 'shape', None),
                       'pixels_prev', getattr(info_dict.get('pixels_prev'), 'shape', None),
-                      'oracle_noise', oracle_noise, 'obs_est', getattr(info_dict.get('obs_est'), 'shape', None), flush=True)
+                      'oracle_noise', oracle_noise, 'obs_est', getattr(info_dict.get('obs_est'), 'shape', None),
+                      'est_straight', est_straight, flush=True)
             action = super().get_action(info_dict, **kwargs)
             for i in range(n):
                 a = np.asarray(action[i], dtype=np.float32)
@@ -481,7 +489,7 @@ def run(cfg: DictConfig):
                 oracle_horizon=cfg.plan_config.horizon if plan_oracle else 0, plan_log=plan_log,
                 clip_history=bool(cfg.get("action_clip", False)), motion=motion,
                 oracle_noise=float(cfg.get("oracle_noise", 0.0)) if plan_oracle else 0.0, noise_seed=int(cfg.seed),
-                est=est, est_horizon=int(cfg.plan_config.horizon),
+                est=est, est_horizon=int(cfg.plan_config.horizon), est_straight=bool(cfg.get("est_straight_past", False)),
             )
         replan = str(cfg.get("replan", "none"))
         if replan in ("gate", "random"):  # E37: gate α가 tau를 넘는 block까지만 실행하고 다시 계획

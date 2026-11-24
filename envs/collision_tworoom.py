@@ -216,7 +216,7 @@ class CollisionTwoRoomEnv(TwoRoomEnv):
                 pos = self.obstacle_pos[i] + n * (min_d + 0.5)
         return pos, contact
 
-    def render_past(self, steps_back: int) -> np.ndarray:
+    def render_past(self, steps_back: int, straight: bool = False) -> np.ndarray:
         """episode 시작 `steps_back` step 전의 화면 (E26, planning history용).
 
         "agent가 시작 위치에 멈춘 채 obstacle을 지켜보았다"고 보고, obstacle만 속도를 뒤집어 거꾸로
@@ -225,6 +225,12 @@ class CollisionTwoRoomEnv(TwoRoomEnv):
         if self.obstacle_pos.shape[0] == 0 or steps_back <= 0:
             return self.render()
         pos0, vel0 = self.obstacle_pos.clone(), self.obstacle_vel.clone()
+        if straight:  # E59: 반사 없이 지금 속도로 곧게 되돌린 위치 (경계에 붙어 spawn된 obstacle의 가짜 반사를 피한다)
+            try:
+                self.obstacle_pos = pos0 - steps_back * vel0
+                return self.render()
+            finally:
+                self.obstacle_pos, self.obstacle_vel = pos0, vel0
         try:
             self.obstacle_vel = -self.obstacle_vel
             for _ in range(steps_back):
