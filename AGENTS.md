@@ -171,7 +171,9 @@ This file provides guidance to AI agents when working with code in this reposito
 - **planning 평가 병렬 (E57):** 한 세션에서 eval을 6개 동시에 돌리면 torch CPU thread가 넘쳐 느려진다(load 32). `eval.py`는 기본 CPU thread를 2개로 두고(`IAWM_EVAL_THREADS`), 탐지기는 계획 step에서만 돌린다.
 - **Colab 운영 (E51):** `collect_collision.py`는 압축 전 raw 파일(frame당 150KB, 1만 episode 약 110GB)을 쓴 뒤 압축한다. 1만 episode 두 개를 동시에 수집하면 L4 세션 디스크(236GB)가 찬다. 큰 수집은 하나씩 한다. 수집(OMP thread 6개 × 2)과 GPU 학습(data loader worker 5개)이 겹치면 수집이 40배 느려진다.
 - **분석 주의 (E40):** plan log에서 성공한 env는 위치가 멈춘 채 기록이 이어진다. 예측과 비교할 때 goal에 닿은 step 이후를 빼야 한다(`analyze_plan_log.py`에 반영).
-- **현재 목표 (11/16, 11/24 E56에서 달성):** 최종 발표(11/26) 전에, 제안 방법이 Collision TwoRoom(r1x, P2)에서 CF-JEPA보다 planning 성공률이 공정 비교로 높다는 결과를 낸다. 다음 실험은 위 결과를 바탕으로 원인을 진단한 뒤 정한다. E42 이후의 질문은 "위치 label과 정답 obstacle 입력 없이도 이 이득이 남는가"다. 개선안마다 근거, 예상 비용, 대조군, 실패 판정 기준을 함께 제시한다.
+- **현재 상태 (11/25):** 실험을 마치고 발표(11/26)를 팀원에게 넘겼다. 발표용 수치와 한계는 `docs/presentation_numbers.md`에 모았다(Proton Drive `발표자료/presentation_numbers.md`에도 있다).
+  - 대표 결과: 화면만 쓰는 제안 방법(탐지기 + obstacle별 h_int)이 CF-JEPA를 obstacle 2개에서 +9.3 ± 1.1%p(E60, 28승 3패), obstacle 3개 학습에서 +8.2 ± 1.5%p(E61) 이겼다. 둘 다 정답 입력 상한과 같은 수준이다.
+  - 처음 목표(11/16, 제안 방법이 CF-JEPA를 공정 비교로 이긴다)는 E56에서 달성했다. 남은 과제는 한계 항목(학습 때 obstacle label, obstacle 겹침, 재계획 간격)과 obstacle 수 일반화다.
 
 ## 작업 규칙
 
