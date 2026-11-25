@@ -47,3 +47,24 @@
 - **obstacle 겹침:** 환경의 crossing spawn과 좁은 방(폭 49px) 때문에 obstacle 여러 개가 대부분의 시간 겹친다(E57). 그래서 "obstacle 3·4개 일반화"는 겹친 obstacle 묶음에 대한 결과다. 덜 겹치는 작은 obstacle에서는 학습한 개수(2개)에서만 이겼다(E58).
 - **재계획 간격:** 2 block(10 step)마다 다시 계획하면 CF-JEPA도 93.5%까지 올라, 제안과의 차이가 +3.3%p로 준다(E59 개발 seed). 이 결과는 25 step을 한 번에 실행하는 평가(CF-JEPA 논문 설정)에서 나온 것이다.
 - 성공률은 50 episode × seed 16~32개의 평균이다. 같은 설정에서도 seed마다 ±4~8%p 흔들린다.
+
+## 5. 최종 발표 덱 (11/25 밤)
+
+덱, 대본, 그림은 Proton Drive `발표자료/3_최종발표_1126/`에 있다(`최종발표_1126.pptx`, `.pdf`, `최종발표_1126_대본.txt`, `최종발표_1126_대본_태블릿.pdf`, `그림_발표/`, `제작/`). 그림은 아래 수치로 새로 그렸다.
+
+| 슬라이드 | 수치 | E |
+|---|---|---|
+| Baseline Reproduction | LeWM 86 / 30 / 2%, CF-JEPA 94 / 88 / 70% (논문 87 / 33 / 1, 95 / 95 / 87) | E0, E3, E5, E7 |
+| Results: Interaction Gate | AUROC 0.96, 충돌 구간 z^c 오차 −18.5% (E27), 성공률 59.5 대 61.9 (+2.4 ± 1.5, E35) | E27, E35 |
+| Analysis: Upper Bound | 충돌을 모르는 / 아는 simulator: 큰 장애물 1개 68 / 96, 장애물 3개 60.0 / 94.7 | E28, E31 |
+| Analysis: Evaluation | 첫 화면 45.3 → 56.7, action 범위 60.8 → 73.4, Distractor TwoRoom 84.8 → 95.4 | E26, E41, E44 |
+| Analysis: Planning Cost | z^c cost 74.1 / 71.6, 위치 cost 85.1 / 91.6 | E42 |
+| Analysis: Latent | 장애물 위치 1.8px, 속도 1.7 px/step | E38 |
+| Trial and Error | label 없는 입력 −1.6 / −1.4 / −0.5, 같은 실험 simulator 정답값 +11.9 / +10.0 / +12.3 | E47, E49, E50 |
+| Trial and Error | 속도 오차 0 / 2 / 4 / 8 → +7.3 / +0.3 / +1.0 / +1.1 | E52 |
+| Results: Detector | 속도 0.31 px/step, 위치 0.05px, 놓침 2.2%, 충돌 구간 오차 감소 61% (정답값 65%) | E56 |
+| Results: Planning | 2개 78.9 / 88.2 / 89.1, 3개 학습 74.1 / 82.2 / 81.1 | E60, E61 |
+| Results: Number of Obstacles | 2개 +6.1, 3개 +7.9 ± 1.1 (E56 seed 42~57과 E57 seed 58~73을 합친 32 seed, 26승 1패), 4개 +3.7, 작은 장애물 2개 +3.4, 3개 +2.8 | E56, E57, E58 |
+
+- 그래프의 오차 막대는 seed별 성공률의 표준오차다. 차이(%p)의 ± 값은 같은 seed끼리 짝지은 차이의 표준오차다.
+- 팀원이 만든 GIF(`그림_최종/8_compare_detector.gif`)는 만든 과정을 확인하지 못해 덱에 넣지 않았다.
