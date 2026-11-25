@@ -3007,3 +3007,17 @@ planning 성공률 (%, obstacle 3개, seed 42~73)
 - 정답 입력의 이득(+7.0)은 E54(+9.6~10.4)보다 작다. 세션마다 CF-JEPA가 72.5~75.8로 흔들리는 범위다.
 
 **결과물:** 로컬 `outputs/e61/res/`(git 제외), Proton Drive `results/E61_three_obstacle_detector/`.
+
+## 2026-11-25 · 실험 종료
+
+최종 발표(11/26)를 앞두고 실험을 마쳤다. 발표용 수치와 한계는 `docs/presentation_numbers.md`에 있다.
+- 제안 방법(화면에서 obstacle 상태를 읽는 탐지기 + obstacle별 h_int)은 공정 비교로 CF-JEPA를 이겼다.
+  - E56: obstacle 2개 +6.1%p
+  - E60: 첫 계획 수정 후 새 seed에서 +9.3%p
+  - E61: obstacle 3개 학습 +8.2%p
+  - E58: 작은 obstacle +3.4%p
+- 한계:
+  - 학습 때 obstacle label을 쓴다.
+  - crossing spawn에서 obstacle이 겹친다(E57). 안 본 개수 일반화는 겹친 조건에서만 확인했다(E57, E58).
+  - 2 block마다 다시 계획하면 차이가 줄어든다(E59).
+- 실험 pipeline(`outputs/e*/`)은 git에 없고, Proton Drive의 각 `results/E<번호>_*/pipeline/`에 사본이 있다.
