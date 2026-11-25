@@ -3008,6 +3008,15 @@ planning 성공률 (%, obstacle 3개, seed 42~73)
 
 **결과물:** 로컬 `outputs/e61/res/`(git 제외), Proton Drive `results/E61_three_obstacle_detector/`.
 
+## 2026-11-26 · 평가의 장애물 배치는 실행마다 무작위 (발표 시연 중 발견)
+
+최종 발표 시연 GIF를 만들려고 `scripts/eval.py`를 로컬 CPU에서 돌리다가 확인했다.
+
+- `World._evaluate_from_dataset`은 dataset 시작 상태로 env를 맞출 때 `reset(seed=init_state.get('seed'))`를 부른다. dataset에 seed 열이 없어 seed가 `None`이다(결과 출력의 `'seeds': None`). 그래서 `_set_goal_state`에서 장애물을 놓는 `np_random`이 실행마다 다르다.
+- 같은 seed로 같은 모델(`e47_cf`)을 두 번 돌리면 agent 시작 위치와 목표는 같고 장애물 배치는 다르다(16 episode, 성공률 62.5 대 81.25).
+- 따라서 E26 이후 모든 Collision env 비교에서 "같은 seed끼리 짝지은 비교"는 agent 시작 위치와 목표만 같은 짝이다. 장애물 배치는 두 모델에 같은 분포에서 따로 뽑혔다. 비교는 공정하지만 "같은 시작 상태"라고 쓰면 안 된다. seed마다 ±4~8%p 흔들리던 원인의 하나로 보인다(같은 GPU에서도 흔들림).
+- 시연에서는 `scripts/eval.py`의 사본에서 시작 상태(agent 위치, 목표)로 장애물 난수를 정해 두 모델의 장애물 배치를 같게 했다(Proton Drive `발표자료/3_최종발표_1126/제작/eval_cpu.py`). 원래 평가 코드는 바꾸지 않았다.
+
 ## 2026-11-25 · 실험 종료
 
 최종 발표(11/26)를 앞두고 실험을 마쳤다. 발표용 수치와 한계는 `docs/presentation_numbers.md`에 있다.

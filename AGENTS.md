@@ -170,6 +170,7 @@ This file provides guidance to AI agents when working with code in this reposito
   - E59(개발 seed): 2 block마다 다시 계획하면 CF-JEPA가 93.5까지 올라 차이가 +3.3으로 준다. 25 step을 한 번에 실행하는 P2 평가에서 interaction 정보의 이득이 크다.
 - **planning 평가 병렬 (E57):** 한 세션에서 eval을 6개 동시에 돌리면 torch CPU thread가 넘쳐 느려진다(load 32). `eval.py`는 기본 CPU thread를 2개로 두고(`IAWM_EVAL_THREADS`), 탐지기는 계획 step에서만 돌린다.
 - **Colab 운영 (E51):** `collect_collision.py`는 압축 전 raw 파일(frame당 150KB, 1만 episode 약 110GB)을 쓴 뒤 압축한다. 1만 episode 두 개를 동시에 수집하면 L4 세션 디스크(236GB)가 찬다. 큰 수집은 하나씩 한다. 수집(OMP thread 6개 × 2)과 GPU 학습(data loader worker 5개)이 겹치면 수집이 40배 느려진다.
+- **평가의 장애물 배치 (11/26 발견):** `World._evaluate_from_dataset`이 env를 seed 없이 reset해서, 같은 seed라도 agent 시작 위치와 목표만 같고 장애물 배치는 실행마다 무작위다. 짝지은 비교는 agent·목표에 대한 짝이다. 비교는 공정하지만 "같은 시작 상태"라고 쓰지 않는다. 자세한 내용은 `docs/experiments.md` 11/26 항목.
 - **분석 주의 (E40):** plan log에서 성공한 env는 위치가 멈춘 채 기록이 이어진다. 예측과 비교할 때 goal에 닿은 step 이후를 빼야 한다(`analyze_plan_log.py`에 반영).
 - **현재 상태 (11/25):** 실험을 마치고 발표(11/26)를 팀원에게 넘겼다. 발표용 수치와 한계는 `docs/presentation_numbers.md`에 모았다(Proton Drive `발표자료/3_최종발표_1126/presentation_numbers.md`에도 있다).
   - 대표 결과: 화면만 쓰는 제안 방법(탐지기 + obstacle별 h_int)이 CF-JEPA를 obstacle 2개에서 +9.3 ± 1.1%p(E60, 28승 3패), obstacle 3개 학습에서 +8.2 ± 1.5%p(E61) 이겼다. 둘 다 정답 입력 상한과 같은 수준이다.
@@ -238,5 +239,5 @@ E25~E37에서 CU를 낭비하거나 결론을 잘못 낼 뻔한 경험에서 나
     - 올리기: `proton-drive filesystem upload <localPath>... <parentPath>`
 - **프로포절 발표 자료:** 공유 폴더의 `발표자료/1_프로포절_1012/프로포절_1012.pptx` (팀원 제작, 10/12 발표에 사용, 9장)
 - **중간 발표 자료 (11/5):** 공유 폴더의 `발표자료/2_중간발표_1105/`에 실제 발표한 덱(`중간발표_1105.pptx`, 팀원 제작), 페이지별 대본(`중간발표_1105_대본.pdf`), 그림 폴더(`그림_E17_E18/`, `그림_E19_E21/`)가 있다. 팀 의견 공유용으로 만든 초안 A·B는 11/25에 삭제했다.
-- **최종 발표 자료 (11/26):** 공유 폴더의 `발표자료/3_최종발표_1126/`에 덱(`최종발표_1126.pptx`, `.pdf`, 24장), 대본(`최종발표_1126_대본.txt`, 태블릿용 PDF), 덱 그림(`그림_발표/`)과 만드는 script(`제작/`), 발표용 수치(`presentation_numbers.md`), 팀원이 먼저 만든 그림(`그림_최종/`, E58까지)이 있다. 덱은 중간 발표 덱의 장식을 복사하고 Pretendard 글꼴을 쓰므로, 발표 PC에 글꼴이 없으면 PDF로 발표한다.
+- **최종 발표 자료 (11/26):** 공유 폴더의 `발표자료/3_최종발표_1126/`에 덱(`최종발표_1126.pptx`, `.pdf`, 25장, GIF 3개), 대본(`최종발표_1126_대본.txt`, 태블릿용 PDF), 덱 그림(`그림_발표/`)과 만드는 script(`제작/`), 발표용 수치(`presentation_numbers.md`), 팀원이 먼저 만든 그림(`그림_최종/`, E58까지)이 있다. 덱은 중간 발표 덱의 장식을 복사하고 Pretendard 글꼴을 쓴다. GIF가 PowerPoint에서만 움직이므로 PPTX로 발표하고, 발표 PC에 Pretendard를 설치한다.
 - **팀원 GitHub:** 강연우 yeonooe, 조하은 gkdms04, 설규원 seolcu.

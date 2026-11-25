@@ -67,4 +67,6 @@
 | Results: Number of Obstacles | 2개 +6.1, 3개 +7.9 ± 1.1 (E56 seed 42~57과 E57 seed 58~73을 합친 32 seed, 26승 1패), 4개 +3.7, 작은 장애물 2개 +3.4, 3개 +2.8 | E56, E57, E58 |
 
 - 그래프의 오차 막대는 seed별 성공률의 표준오차다. 차이(%p)의 ± 값은 같은 seed끼리 짝지은 차이의 표준오차다.
-- 팀원이 만든 GIF(`그림_최종/8_compare_detector.gif`)는 만든 과정을 확인하지 못해 덱에 넣지 않았다.
+- 팀원이 만든 GIF(`그림_최종/8_compare_detector.gif`)는 만든 과정을 확인하지 못해 쓰지 않았다. 대신 GIF 3개를 새로 만들었다(Problem: 실제 env의 충돌 장면, Results: Detector: 학습된 detector가 읽은 위치·속도, Results: Example: CF-JEPA와 제안 모델을 같은 시작 상태에서 돌린 평가 영상). 만든 방법은 Proton `제작/README.txt`에 있다. GIF는 PowerPoint에서만 움직이므로 PPTX로 발표한다.
+- 시연(Results: Example)은 episode 16개 중 결과가 갈린 하나를 고른 것이다(CF-JEPA 13개, 제안 14개 성공). 결과 수치로 쓰지 않는다.
+- 성공률 비교의 "같은 seed"는 agent 시작 위치와 목표가 같다는 뜻이다. 장애물 배치는 실행마다 무작위였다(experiments.md 11/26 항목).
