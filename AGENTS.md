@@ -171,7 +171,7 @@ This file provides guidance to AI agents when working with code in this reposito
 - **planning 평가 병렬 (E57):** 한 세션에서 eval을 6개 동시에 돌리면 torch CPU thread가 넘쳐 느려진다(load 32). `eval.py`는 기본 CPU thread를 2개로 두고(`IAWM_EVAL_THREADS`), 탐지기는 계획 step에서만 돌린다.
 - **Colab 운영 (E51):** `collect_collision.py`는 압축 전 raw 파일(frame당 150KB, 1만 episode 약 110GB)을 쓴 뒤 압축한다. 1만 episode 두 개를 동시에 수집하면 L4 세션 디스크(236GB)가 찬다. 큰 수집은 하나씩 한다. 수집(OMP thread 6개 × 2)과 GPU 학습(data loader worker 5개)이 겹치면 수집이 40배 느려진다.
 - **분석 주의 (E40):** plan log에서 성공한 env는 위치가 멈춘 채 기록이 이어진다. 예측과 비교할 때 goal에 닿은 step 이후를 빼야 한다(`analyze_plan_log.py`에 반영).
-- **현재 상태 (11/25):** 실험을 마치고 발표(11/26)를 팀원에게 넘겼다. 발표용 수치와 한계는 `docs/presentation_numbers.md`에 모았다(Proton Drive `발표자료/presentation_numbers.md`에도 있다).
+- **현재 상태 (11/25):** 실험을 마치고 발표(11/26)를 팀원에게 넘겼다. 발표용 수치와 한계는 `docs/presentation_numbers.md`에 모았다(Proton Drive `발표자료/3_최종발표_1126/presentation_numbers.md`에도 있다).
   - 대표 결과: 화면만 쓰는 제안 방법(탐지기 + obstacle별 h_int)이 CF-JEPA를 obstacle 2개에서 +9.3 ± 1.1%p(E60, 28승 3패), obstacle 3개 학습에서 +8.2 ± 1.5%p(E61) 이겼다. 둘 다 정답 입력 상한과 같은 수준이다.
   - 처음 목표(11/16, 제안 방법이 CF-JEPA를 공정 비교로 이긴다)는 E56에서 달성했다. 남은 과제는 한계 항목(학습 때 obstacle label, obstacle 겹침, 재계획 간격)과 obstacle 수 일반화다.
 
@@ -231,14 +231,12 @@ E25~E37에서 CU를 낭비하거나 결론을 잘못 낼 뻔한 경험에서 나
 
 - **팀 공유 폴더 (Proton Drive):** `/my-files/문서/interaction-aware-wm` (설규원 계정, 링크 공유)
   - git에 넣기 애매한 파일(영상, 그림, 결과 파일, 발표 자료)은 여기에 둔다. 코드와 실험 일지는 GitHub에 둔다.
-  - 현재 내용: `README.txt`(폴더 안내), `results/E0_lewm_tworoom_baseline`, `results/E1_collision_tworoom`, `results/E2_oracle`, `발표자료/`(프로포절, 중간 발표 PDF와 PPTX).
+  - 현재 내용: `README.txt`(폴더 안내), `results/E0_lewm_tworoom_baseline`, `results/E1_collision_tworoom`, `results/E2_oracle`, `발표자료/`(`1_프로포절_1012/`, `2_중간발표_1105/`, `3_최종발표_1126/`, 11/25 정리).
   - 로컬에 Proton Drive CLI(`proton-drive`, `~/.local/bin`)가 있으면 그것을 쓴다.
     - 목록: `proton-drive filesystem list <path>`
     - 내려받기: `proton-drive filesystem download <path>... <localFolder>`
     - 올리기: `proton-drive filesystem upload <localPath>... <parentPath>`
-- **프로포절 발표 자료:** 공유 폴더의 `발표자료/프로포절_1012.pptx` (팀원 제작, 10/12 발표에 사용, 9장)
-- **중간 발표 자료 (11/5):** 공유 폴더의 `발표자료/중간발표_1105_초안A`, `초안B` (.pdf, .pptx). 원본은 claude.ai Slides artifact 두 개다(초안 A https://claude.ai/artifact/FazKjAFMeGhNYx1Ko8yk1c, 초안 B https://claude.ai/artifact/AwF518RSccJqVhEbPXf8RU). 덱을 고치면 artifact의 내보내기(PDF, PowerPoint current fonts)로 받아 같은 이름으로 새 revision을 올린다.
-  - 구성: 표지 / Topic / Motivation / Objectives / Background(CF-JEPA, TwoRoom 0.87·0.95 / 0.33·0.95, §V 인용) / Related Works / Proposed Method / Baseline Reproduction(LeWM 0.86) / Collision TwoRoom(seed 0~3 frame, "추후: 충돌·비충돌 구간의 예측 오차와 α_t 비교").
-  - 슬라이드 글자가 모두 이미지라 python-pptx로는 텍스트가 나오지 않는다. `soffice --headless --convert-to pdf`로 바꿔서 본다.
-  - E2 oracle 실험은 분량 때문에 일부러 넣지 않았다. 중간 발표에서 활용한다.
+- **프로포절 발표 자료:** 공유 폴더의 `발표자료/1_프로포절_1012/프로포절_1012.pptx` (팀원 제작, 10/12 발표에 사용, 9장)
+- **중간 발표 자료 (11/5):** 공유 폴더의 `발표자료/2_중간발표_1105/`에 실제 발표한 덱(`인공지능 17팀 중간발표.pptx`, 팀원 제작)과 페이지별 대본 PDF, 그림 폴더(`midterm_figs/`, `e19:20:21-graph/`)가 있다. 팀 의견 공유용으로 만든 초안 A·B는 11/25에 삭제했다.
+- **최종 발표 자료 (11/26):** 공유 폴더의 `발표자료/3_최종발표_1126/`에 발표용 수치(`presentation_numbers.md`)와 그림(`final_figs/`, 그림 1~8과 설명 `info.txt`)이 있다.
 - **팀원 GitHub:** 강연우 yeonooe, 조하은 gkdms04, 설규원 seolcu.

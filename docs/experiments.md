@@ -796,7 +796,7 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 - 두 모델의 차이는 모든 점에서 오차 범위 안이다. 같은 조건에서도 seed에 따라 최대 8%p 차이가 난다.
 - 학습은 obstacle 1개로만 했으므로, 하락에는 "학습 때 못 본 상황"의 영향도 섞여 있다. 이를 나누려면 여러 obstacle data로 학습해야 한다(E15가 3개로 학습한 경우다).
 
-**결과물:** Proton Drive `발표자료/midterm_figs/`의 `obstacle_sweep.png`, `.svg`, `.csv`, `obstacle_sweep_summary.txt`. 중간 발표 덱 6페이지에 넣었다.
+**결과물:** Proton Drive `발표자료/2_중간발표_1105/midterm_figs/`의 `obstacle_sweep.png`, `.svg`, `.csv`, `obstacle_sweep_summary.txt`. 중간 발표 덱 6페이지에 넣었다.
 
 ## 2026-11-04 · E18. Planning 중 gate α_t 시각화 (강연우)
 
@@ -815,7 +815,7 @@ bash /content/iawm/scripts/colab/eval_lewm_tworoom.sh   # 약 3분
 
 **해석:** E12 분석(AUROC 0.905)과 같은 결론이다. gate는 충돌 순간을 알아차리지만, 켜졌을 때의 h_int 예측 이득은 0.5% 수준이라 성공률은 CF-JEPA와 같다.
 
-**결과물:** Proton Drive `발표자료/midterm_figs/`의 `gate_env{0,2,5,15}.gif`, `.png`, `steps.csv`, `summary.txt`, `arrange.txt`. 중간 발표 덱 8페이지에 넣었다.
+**결과물:** Proton Drive `발표자료/2_중간발표_1105/midterm_figs/`의 `gate_env{0,2,5,15}.gif`, `.png`, `steps.csv`, `summary.txt`, `arrange.txt`. 중간 발표 덱 8페이지에 넣었다.
 
 ## 2026-11-04 · E19. h_int와 gate만 lr 1e-3으로 학습
 
