@@ -187,6 +187,7 @@ This file provides guidance to AI agents when working with code in this reposito
   - 기호 z^c, z^u, α_t, g, h, h_int는 README와 같은 뜻으로 쓴다.
   - 코드 변수명도 이를 따른다: `z_c`, `z_u`, `alpha`, `h_int`.
 - **커밋 메시지:** 영어로 쓴다.
+- **발표 용어 (11/26 정함):** 최종 발표 덱에서 같은 대상은 한 이름으로만 부른다. 계획 → planning, 행동 → action, 궤적 예측기 → 궤적 예측 network(`ObsForecaster`), oracle → simulator 정답값, pos probe cost → agent 위치 cost, 탐지기 → 장애물 detector. 전체 목록과 쓰지 않는 표현(비유, 승패 표현, 회색 부연 글씨 등)은 `docs/presentation_numbers.md` 5절 "발표 용어"에 있다.
 - **환경 이름 (11/1 정함):** 실험 환경은 영어 이름으로만 부른다. 충돌하지 않는 사각형이 있는 환경은 **Distractor env**(TwoRoom이면 Distractor TwoRoom), 움직이는 obstacle이 agent를 미는 환경은 **Collision env**(Collision TwoRoom)다. 예전 표기(Env 뒤에 동그라미 숫자)와 한국어 이름(사각형 환경, 충돌 환경)은 쓰지 않는다.
 
 ## 실험 운영 규칙 (11/16 정함)
@@ -239,5 +240,5 @@ E25~E37에서 CU를 낭비하거나 결론을 잘못 낼 뻔한 경험에서 나
     - 올리기: `proton-drive filesystem upload <localPath>... <parentPath>`
 - **프로포절 발표 자료:** 공유 폴더의 `발표자료/1_프로포절_1012/프로포절_1012.pptx` (팀원 제작, 10/12 발표에 사용, 9장)
 - **중간 발표 자료 (11/5):** 공유 폴더의 `발표자료/2_중간발표_1105/`에 실제 발표한 덱(`중간발표_1105.pptx`, 팀원 제작), 페이지별 대본(`중간발표_1105_대본.pdf`), 그림 폴더(`그림_E17_E18/`, `그림_E19_E21/`)가 있다. 팀 의견 공유용으로 만든 초안 A·B는 11/25에 삭제했다.
-- **최종 발표 자료 (11/26):** 공유 폴더의 `발표자료/3_최종발표_1126/`에 덱(`최종발표_1126.pptx`, `.pdf`, 25장, GIF 3개), 대본(`최종발표_1126_대본.txt`, 태블릿용 PDF), 덱 그림(`그림_발표/`)과 만드는 script(`제작/`), 발표용 수치(`presentation_numbers.md`), 팀원이 먼저 만든 그림(`그림_최종/`, E58까지)이 있다. 덱은 중간 발표 덱의 장식을 복사하고 Pretendard 글꼴을 쓴다. GIF가 PowerPoint에서만 움직이므로 PPTX로 발표하고, 발표 PC에 Pretendard를 설치한다.
+- **최종 발표 자료 (11/26):** 공유 폴더의 `발표자료/3_최종발표_1126/`에 덱(`최종발표_1126.pptx`, `.pdf`, 25장, GIF 3개), 대본(`최종발표_1126_대본.txt`), 덱 그림(`그림_발표/`), 만드는 script(`제작/`), 글꼴(`글꼴/`, Pretendard TTF), 발표용 수치(`presentation_numbers.md`), 팀원이 먼저 만든 그림(`그림_최종/`, E58까지)이 있다. 덱은 중간 발표 덱의 장식을 복사하고 Pretendard 글꼴을 쓴다. GIF가 PowerPoint에서만 움직이므로 PPTX로 발표하고, 발표 PC에 Pretendard를 설치한다.
 - **팀원 GitHub:** 강연우 yeonooe, 조하은 gkdms04, 설규원 seolcu.

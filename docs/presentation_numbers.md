@@ -48,25 +48,48 @@
 - **재계획 간격:** 2 block(10 step)마다 다시 계획하면 CF-JEPA도 93.5%까지 올라, 제안과의 차이가 +3.3%p로 준다(E59 개발 seed). 이 결과는 25 step을 한 번에 실행하는 평가(CF-JEPA 논문 설정)에서 나온 것이다.
 - 성공률은 50 episode × seed 16~32개의 평균이다. 같은 설정에서도 seed마다 ±4~8%p 흔들린다.
 
-## 5. 최종 발표 덱 (11/25 밤)
+## 5. 최종 발표 덱 (11/26 최종본)
 
-덱, 대본, 그림은 Proton Drive `발표자료/3_최종발표_1126/`에 있다(`최종발표_1126.pptx`, `.pdf`, `최종발표_1126_대본.txt`, `최종발표_1126_대본_태블릿.pdf`, `그림_발표/`, `제작/`). 그림은 아래 수치로 새로 그렸다.
+덱, 대본, 그림, 글꼴은 Proton Drive `발표자료/3_최종발표_1126/`에 있다(`최종발표_1126.pptx`(25장, 발표용), `.pdf`(예비, GIF는 첫 화면만), `최종발표_1126_대본.txt`, `그림_발표/`, `제작/`, `글꼴/`). 태블릿용 대본 PDF는 만들었다가 지웠다. 그림은 아래 수치로 새로 그렸다.
 
 | 슬라이드 | 수치 | E |
 |---|---|---|
 | Baseline Reproduction | LeWM 86 / 30 / 2%, CF-JEPA 94 / 88 / 70% (논문 87 / 33 / 1, 95 / 95 / 87) | E0, E3, E5, E7 |
 | Results: Interaction Gate | AUROC 0.96, 충돌 구간 z^c 오차 −18.5% (E27), 성공률 59.5 대 61.9 (+2.4 ± 1.5, E35) | E27, E35 |
-| Analysis: Upper Bound | 충돌을 모르는 / 아는 simulator: 큰 장애물 1개 68 / 96, 장애물 3개 60.0 / 94.7 | E28, E31 |
+| Analysis: Upper Bound | 충돌을 계산하지 않는 / 계산하는 simulator: 큰 장애물 1개 68 / 96, 장애물 3개 60.0 / 94.7 | E28, E31 |
 | Analysis: Evaluation | 첫 화면 45.3 → 56.7, action 범위 60.8 → 73.4, Distractor TwoRoom 84.8 → 95.4 | E26, E41, E44 |
-| Analysis: Planning Cost | z^c cost 74.1 / 71.6, 위치 cost 85.1 / 91.6 | E42 |
-| Analysis: Latent | 장애물 위치 1.8px, 속도 1.7 px/step | E38 |
+| Analysis: Planning Cost | z^c 거리 cost 74.1 / 71.6, agent 위치 cost 85.1 / 91.6 | E42 |
+| Analysis: Latent | 장애물 위치 1.8px, 속도 1.7px/step | E38 |
 | Trial and Error | label 없는 입력 −1.6 / −1.4 / −0.5, 같은 실험 simulator 정답값 +11.9 / +10.0 / +12.3 | E47, E49, E50 |
 | Trial and Error | 속도 오차 0 / 2 / 4 / 8 → +7.3 / +0.3 / +1.0 / +1.1 | E52 |
-| Results: Detector | 속도 0.31 px/step, 위치 0.05px, 놓침 2.2%, 충돌 구간 오차 감소 61% (정답값 65%) | E56 |
+| Results: Detector | 속도 0.31px/step, 위치 0.05px, 검출되지 않은 장애물 2.2%, 충돌 구간 오차 감소 61% (정답값 65%) | E56 |
 | Results: Planning | 2개 78.9 / 88.2 / 89.1, 3개 학습 74.1 / 82.2 / 81.1 | E60, E61 |
-| Results: Number of Obstacles | 2개 +6.1, 3개 +7.9 ± 1.1 (E56 seed 42~57과 E57 seed 58~73을 합친 32 seed, 26승 1패), 4개 +3.7, 작은 장애물 2개 +3.4, 3개 +2.8 | E56, E57, E58 |
+| Results: Number of Obstacles | 2개 +6.1, 3개 +7.9 ± 1.1 (E56 seed 42~57과 E57 seed 58~73을 합친 32 seed, CF-JEPA보다 높은 seed 26개, 낮은 seed 1개), 4개 +3.7, 작은 장애물 2개 +3.4, 3개 +2.8 | E56, E57, E58 |
 
 - 그래프의 오차 막대는 seed별 성공률의 표준오차다. 차이(%p)의 ± 값은 같은 seed끼리 짝지은 차이의 표준오차다.
-- 팀원이 만든 GIF(`그림_최종/8_compare_detector.gif`)는 만든 과정을 확인하지 못해 쓰지 않았다. 대신 GIF 3개를 새로 만들었다(Problem: 실제 env의 충돌 장면, Results: Detector: 학습된 detector가 읽은 위치·속도, Results: Example: CF-JEPA와 제안 모델을 같은 시작 상태에서 돌린 평가 영상). 만든 방법은 Proton `제작/README.txt`에 있다. GIF는 PowerPoint에서만 움직이므로 PPTX로 발표한다.
-- 시연(Results: Example)은 episode 16개 중 결과가 갈린 하나를 고른 것이다(CF-JEPA 13개, 제안 14개 성공). 결과 수치로 쓰지 않는다.
+- 팀원이 만든 그림(`그림_최종/`, `final_figs_v2/`)은 문장형 제목, 색 강조 숫자 등이 있어 쓰지 않고 모두 새로 그렸다. GIF 3개도 새로 만들었다(Problem: CF-JEPA가 장애물에 밀려 목표에서 멀어지는 episode, Results: Detector: 학습된 detector가 추정한 중심 위치·속도, Results: Example: CF-JEPA와 제안 모델을 같은 시작 상태에서 돌린 같은 episode). 시연 episode는 로컬 CPU에서 두 모델을 80개 돌려, CF-JEPA가 가장 크게 밀려난 것(목표와의 거리 39px → 88px, 제안 방법은 27 step에 도달)을 골랐다. 만든 방법은 Proton `제작/README.txt`에 있다.
+- GIF는 PowerPoint에서만 움직이므로 PPTX로 발표한다. 덱은 Pretendard(본문)와 Pretendard Black(제목)을 쓴다. 발표 PC에 없으면 `글꼴/`의 TTF(파일에 넣는 것을 허용하는 fsType 0)를 설치하거나 PowerPoint의 "파일의 글꼴 포함"으로 PPTX에 넣는다.
+- 대본은 소제목, 용어, 숫자를 슬라이드 문구와 맞추고, 한국 성인 문단 낭독 평균 말 속도(4.82음절/초, 쉼 포함)로 말하는 시간 약 14.5분(장 전환 포함 약 15분)에 맞췄다. 발표자가 읽기 어려운 영어 단어 24개는 각 장에서 처음 나올 때 괄호로 한국어 발음을 붙였다.
 - 성공률 비교의 "같은 seed"는 agent 시작 위치와 목표가 같다는 뜻이다. 장애물 배치는 실행마다 무작위였다(experiments.md 11/26 항목).
+
+### 발표 용어 (11/26 정함)
+
+슬라이드, 대본, 그림에서 같은 대상은 아래 한 가지 이름으로만 부른다. 처음 나오는 장에서 정의한다.
+
+| 쓰는 말 | 뜻 / 코드·실험 기록 이름 | 쓰지 않는 말 |
+|---|---|---|
+| planning | CEM으로 action을 고르는 과정 | 계획, 재계획, CEM(설명 없는 약어) |
+| action, action 후보 | agent의 이동 명령, CEM sample | 행동, 행동 후보 |
+| step | agent가 action 하나를 실행하는 단위 | 5 step 묶음, block |
+| cost | 예측한 미래와 목표 사이의 거리 | |
+| simulator 정답값 | simulator가 계산한 장애물 위치·속도를 h_int에 넣은 상한 (oracle, `*_po`, `*_obs`) | oracle, 정답 입력 |
+| agent 위치 cost | latent에서 agent 위치를 출력하는 작은 network로 계산한 거리 (`agent_px`, pos probe) | probe |
+| 장애물 detector | 화면 두 장에서 장애물 중심 위치·속도를 추정 (`ObsDetector`) | 탐지기 |
+| 궤적 예측 network | 장애물의 현재 위치·속도로 앞으로의 위치를 예측하는 작은 MLP (`ObsForecaster`) | 궤적 예측기, 예측기 |
+| ① 예측 network | label 없이 다음 latent를 예측하는 network (E45~E50 forecaster) | 예측기 |
+| 충돌을 계산하지 않는 / 충돌까지 계산하는 simulator | `oracle_blind` / `oracle_aware` | 충돌을 모르는 / 아는 |
+| 추정하다, 검출되지 않은 장애물 비율 | detector 출력, miss rate | 읽다, 놓치다 |
+| CF-JEPA보다 높은 / 낮은 seed | paired 비교에서 차이의 부호 | 승/패, 이겼다/졌다 |
+
+- 비유·의인화(믿다, 알다, 흔들리다, 굴리다 등), em dash, "A가 아니라 B", 본문 속 "→" 연결, 작은 회색 부연 글씨, 문장형 제목은 쓰지 않는다.
+- 성공률은 %로 쓴다(87%). 단위는 붙여 쓴다(1.8px, 1.7px/step). 표 머리글도 소문자 영어로 맞춘다(task, module).
